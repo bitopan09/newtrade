@@ -2,7 +2,7 @@ services:
   - type: web
     name: signalforge
     env: node
-    buildCommand: cd frontend && npm install && npm run build && cd ../backend && npm install
+    buildCommand: npm install && npm run build && npm rebuild sqlite3 --build-from-source
     startCommand: node backend/server.js
     envVars:
       - key: PORT
