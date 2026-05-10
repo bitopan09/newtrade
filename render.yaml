@@ -25,3 +25,5 @@ services:
         value: "true"
       - key: BOT_ENABLED
         value: "true"
+      - key: NODE_VERSION
+        value: "20.12.2"
