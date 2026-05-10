@@ -631,6 +631,15 @@ const server_instance = server.listen(PORT, '0.0.0.0', () => {
             }
         }, 2000);
     }
+
+    // Keep-alive self-ping for Render free tier (prevents sleep after 15 min)
+    if (process.env.RENDER_EXTERNAL_URL || process.env.KEEP_ALIVE === 'true') {
+        const pingUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+        setInterval(() => {
+            fetch(`${pingUrl}/api/price`).catch(() => {});
+        }, 14 * 60 * 1000); // Ping every 14 minutes
+        console.log('[KEEP-ALIVE] Self-ping enabled (every 14 min)');
+    }
 });
 
 // Graceful shutdown

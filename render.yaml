@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: signalforge
+    env: node
+    buildCommand: cd frontend && npm install && npm run build && cd ../backend && npm install
+    startCommand: node backend/server.js
+    envVars:
+      - key: PORT
+        value: 5001
+      - key: NODE_ENV
+        value: production
+      - key: EMAIL_SERVICE
+        value: gmail
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: NOTIFY_EMAIL
+        sync: false
+      - key: SEND_EMAIL_ON_TRADE
+        value: "true"
+      - key: SEND_DAILY_SUMMARY
+        value: "true"
+      - key: SEND_ERROR_ALERTS
+        value: "true"
+      - key: BOT_ENABLED
+        value: "true"
