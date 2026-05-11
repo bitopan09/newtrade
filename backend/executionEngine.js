@@ -288,7 +288,7 @@ class ExecutionEngine {
 
         // Email - use the EmailService
         const EmailService = require('./emailService');
-        if (EmailService && process.env.EMAIL_RECIPIENT) {
+        if (EmailService && (process.env.EMAIL_RECIPIENT || process.env.NOTIFY_EMAIL)) {
             try {
                 const trade = {
                     action: message.includes('BUY') ? 'BUY' : (message.includes('SELL') ? 'SELL' : 'INFO'),
