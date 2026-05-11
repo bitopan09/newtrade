@@ -440,7 +440,6 @@ app.post('/api/backtest', async (req, res) => {
         res.status(500).json({ error: 'Backtest failed: ' + error.message });
     }
 });
-});
 
 // Manual Trading endpoint (Paper Trading for users)
 app.post('/api/manual-trade', async (req, res) => {
