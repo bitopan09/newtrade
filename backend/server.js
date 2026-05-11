@@ -46,6 +46,7 @@ db.serialize(() => {
 
     db.run(`CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId TEXT DEFAULT 'default',
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     action TEXT,
     entry_price REAL,
@@ -59,20 +60,22 @@ db.serialize(() => {
     tp1 REAL,
     tp2 REAL,
     exit_reason TEXT,
-    exit_timestamp DATETIME
+    exit_timestamp DATETIME,
+    trade_type TEXT DEFAULT 'live'
   )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS balance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId TEXT DEFAULT 'default',
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     usd_balance REAL,
     btc_balance REAL
   )`);
 
-    // Insert initial balance if it doesn't exist
-    db.get(`SELECT COUNT(*) as count FROM balance`, [], (err, row) => {
+    // Initialize balance for default user if needed
+    db.get(`SELECT COUNT(*) as count FROM balance WHERE userId = 'default'`, [], (err, row) => {
         if (!err && row.count === 0) {
-            db.run(`INSERT INTO balance (usd_balance, btc_balance) VALUES (100, 0)`);
+            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES ('default', 10000, 0)`);
         }
     });
 
@@ -135,20 +138,29 @@ app.get('/api/prices', (req, res) => {
 });
 
 app.get('/api/balance', (req, res) => {
-    // Get latest balance
-    db.get(`SELECT * FROM balance ORDER BY timestamp DESC LIMIT 1`, [], (err, row) => {
+    // Get latest balance for user
+    const userId = req.query.userId || 'default';
+    db.get(`SELECT * FROM balance WHERE userId = ? ORDER BY timestamp DESC LIMIT 1`, [userId], (err, row) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
         }
-        res.json(row || {});
+        // Create default balance for new users
+        if (!row) {
+            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, 10000, 0)`, [userId], function() {
+                res.json({ userId, usd_balance: 10000, btc_balance: 0, id: this.lastID });
+            });
+        } else {
+            res.json(row || {});
+        }
     });
 });
 
 app.get('/api/trades', (req, res) => {
-    // Get trade history
+    // Get trade history for user
     const limit = req.query.limit || 50;
-    db.all(`SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?`, [limit], (err, rows) => {
+    const userId = req.query.userId || 'default';
+    db.all(`SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC LIMIT ?`, [userId, limit], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -158,8 +170,9 @@ app.get('/api/trades', (req, res) => {
 });
 
 app.get('/api/trades/active', (req, res) => {
-    // Get active trades
-    db.all(`SELECT * FROM trades WHERE status = 'OPEN' ORDER BY timestamp DESC`, [], (err, rows) => {
+    // Get active trades for user
+    const userId = req.query.userId || 'default';
+    db.all(`SELECT * FROM trades WHERE userId = ? AND status = 'OPEN' ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -169,18 +182,27 @@ app.get('/api/trades/active', (req, res) => {
 });
 
 app.post('/api/trades', (req, res) => {
-    // Record a new trade
-    const { action, entry_price, exit_price, quantity, pnl, score, notes } = req.body;
+    // Record a new trade for user
+    const { action, entry_price, exit_price, quantity, pnl, score, notes, userId } = req.body;
+    const user = userId || 'default';
 
     db.run(
-        `INSERT INTO trades (action, entry_price, exit_price, quantity, pnl, score, notes) 
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [action, entry_price, exit_price, quantity, pnl, score, notes],
+        `INSERT INTO trades (userId, action, entry_price, exit_price, quantity, pnl, score, notes, trade_type) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'paper')`,
+        [user, action, entry_price, exit_price, quantity, pnl, score, notes],
         function (err) {
             if (err) {
                 res.status(500).json({ error: err.message });
                 return;
             }
+            // Update user balance
+            db.get(`SELECT * FROM balance WHERE userId = ? ORDER BY timestamp DESC LIMIT 1`, [user], (err, balance) => {
+                if (!err && balance) {
+                    const newBalance = balance.usd_balance + (pnl || 0);
+                    db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, ?)`, 
+                        [user, newBalance, balance.btc_balance]);
+                }
+            });
             res.json({ id: this.lastID, message: 'Trade recorded successfully' });
         }
     );
@@ -363,10 +385,11 @@ app.post('/api/backtest', async (req, res) => {
     }
 });
 
-// Manual Trading endpoint
+// Manual Trading endpoint (Paper Trading for users)
 app.post('/api/manual-trade', async (req, res) => {
     try {
-        const { action, quantity } = req.body;
+        const { action, quantity, userId } = req.body;
+        const user = userId || 'default';
         
         // Get current price
         db.get('SELECT price FROM prices ORDER BY timestamp DESC LIMIT 1', async (err, row) => {
@@ -374,19 +397,37 @@ app.post('/api/manual-trade', async (req, res) => {
                 return res.status(500).json({ error: 'Could not get current price' });
             }
             
-            const signal = { action: action.toUpperCase(), price: row.price };
-            const result = await tradingBot.executionEngine.executeTrade(signal, quantity || 0.01);
+            // For paper trading, simulate the trade
+            const entryPrice = row.price;
+            const signal = { action: action.toUpperCase(), price: entryPrice };
             
-            if (result.success && process.env.SEND_EMAIL_ON_TRADE === 'true') {
-                // Send email notification about the trade
-                await emailService.sendTradeNotification(result.trade, `${result.trade.action} TRADE`);
-            }
+            // Create paper trade record
+            const sl = action === 'BUY' ? entryPrice * 0.98 : entryPrice * 1.02;
+            const tp = action === 'BUY' ? entryPrice * 1.03 : entryPrice * 0.97;
             
-            if (result.success) {
-                res.json(result);
-            } else {
-                res.status(400).json(result);
-            }
+            db.run(
+                `INSERT INTO trades (userId, action, entry_price, quantity, sl, tp1, status, trade_type) 
+                 VALUES (?, ?, ?, ?, ?, ?, 'OPEN', 'paper')`,
+                [user, action, entryPrice, quantity || 0.01, sl, tp],
+                function(err) {
+                    if (err) {
+                        return res.status(500).json({ error: err.message });
+                    }
+                    res.json({ 
+                        success: true,
+                        tradeId: this.lastID,
+                        message: `Paper ${action} trade opened at $${entryPrice.toFixed(2)}`,
+                        trade: {
+                            id: this.lastID,
+                            action,
+                            entryPrice,
+                            quantity: quantity || 0.01,
+                            sl,
+                            tp: tp
+                        }
+                    });
+                }
+            );
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -419,7 +460,8 @@ app.post('/api/trades/:id/close', async (req, res) => {
 
 // CSV Export endpoint
 app.get('/api/trades/export', (req, res) => {
-    db.all('SELECT * FROM trades ORDER BY timestamp DESC', (err, rows) => {
+    const userId = req.query.userId || 'default';
+    db.all('SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC', [userId], (err, rows) => {
         if (err) {
             return res.status(500).send('Error fetching trades');
         }
@@ -430,7 +472,7 @@ app.get('/api/trades/export', (req, res) => {
         
         // Create CSV header
         const headers = ['ID', 'Date', 'Action', 'Entry Price', 'Exit Price', 'Quantity', 'Stop Loss', 'Take Profit 1', 'Take Profit 2', 'Status', 'P&L', 'Notes'];
-        let csv = headers.join(',') + '\\n';
+        let csv = headers.join(',') + '\n';
         
         // Add rows
         rows.forEach(row => {
@@ -448,7 +490,7 @@ app.get('/api/trades/export', (req, res) => {
                 row.pnl || '',
                 (row.notes || '').replace(/,/g, ' ') // Avoid breaking CSV formatting
             ];
-            csv += cols.join(',') + '\\n';
+            csv += cols.join(',') + '\n';
         });
         
         res.setHeader('Content-Type', 'text/csv');

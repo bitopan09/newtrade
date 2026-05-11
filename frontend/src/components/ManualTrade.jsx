@@ -1,29 +1,33 @@
 import React, { useState } from 'react';
-import { manualTrade } from '../services/api';
+import { manualTrade, userId } from '../services/api';
 
 const ManualTrade = () => {
     const [quantity, setQuantity] = useState(0.01);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
+    const [messageType, setMessageType] = useState('');
 
     const handleTrade = async (action) => {
         setLoading(true);
         setMessage('');
+        setMessageType('');
         try {
             const result = await manualTrade(action, quantity);
-            setMessage(result.message || `Successfully executed ${action}`);
+            setMessageType('success');
+            setMessage(result.message || `Successfully executed ${action} at ${result.trade?.entryPrice?.toFixed(2)}`);
         } catch (error) {
+            setMessageType('error');
             setMessage(error.error || error.reason || `Failed to execute ${action}`);
         } finally {
             setLoading(false);
-            // Clear message after 3 seconds
-            setTimeout(() => setMessage(''), 3000);
+            // Clear message after 4 seconds
+            setTimeout(() => setMessage(''), 4000);
         }
     };
 
     return (
         <div className="manual-trade-container">
-            <h2>Manual Trade</h2>
+            <h2>Paper Trade (User: {userId.substring(0, 12)}...)</h2>
             <div className="trade-controls">
                 <div className="input-group">
                     <label>Quantity (BTC)</label>
@@ -31,8 +35,9 @@ const ManualTrade = () => {
                         type="number" 
                         step="0.01" 
                         min="0.01" 
+                        max="10"
                         value={quantity} 
-                        onChange={(e) => setQuantity(parseFloat(e.target.value))}
+                        onChange={(e) => setQuantity(parseFloat(e.target.value) || 0)}
                     />
                 </div>
                 <div className="action-buttons">
@@ -41,18 +46,18 @@ const ManualTrade = () => {
                         onClick={() => handleTrade('BUY')}
                         disabled={loading}
                     >
-                        BUY
+                        {loading ? 'Processing...' : 'BUY'}
                     </button>
                     <button 
                         className="btn-sell" 
                         onClick={() => handleTrade('SELL')}
                         disabled={loading}
                     >
-                        SELL
+                        {loading ? 'Processing...' : 'SELL'}
                     </button>
                 </div>
             </div>
-            {message && <div className="trade-message">{message}</div>}
+            {message && <div className={`trade-message ${messageType}`}>{message}</div>}
         </div>
     );
 };

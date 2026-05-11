@@ -1,6 +1,37 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:5001/api' : '/api');
+// Get API URL from environment or use current location
+let API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+
+// If running locally, use port 5001
+if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    API_BASE_URL = 'http://localhost:5001/api';
+}
+
+// Support Railway URL format (railway.app domain)
+if (window.location.host.includes('railway.app') || window.location.host.includes('render.com')) {
+    API_BASE_URL = `${window.location.protocol}//${window.location.host}/api`;
+}
+
+// Get or create user session ID
+const getOrCreateUserId = () => {
+    let userId = localStorage.getItem('userId');
+    if (!userId) {
+        userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+        localStorage.setItem('userId', userId);
+    }
+    return userId;
+};
+
+const userId = getOrCreateUserId();
+
+// Helper function to add user ID to requests
+const withUserId = (data = {}) => ({
+    ...data,
+    userId: userId
+});
+
+export { userId };
 
 export const fetchPrice = async () => {
     try {
@@ -26,7 +57,9 @@ export const fetchPrices = async (limit = 100) => {
 
 export const fetchBalance = async () => {
     try {
-        const response = await axios.get(`${API_BASE_URL}/balance`);
+        const response = await axios.get(`${API_BASE_URL}/balance`, {
+            params: { userId }
+        });
         return response.data;
     } catch (error) {
         console.error('Error fetching balance:', error);
@@ -37,7 +70,7 @@ export const fetchBalance = async () => {
 export const fetchTrades = async (limit = 50) => {
     try {
         const response = await axios.get(`${API_BASE_URL}/trades`, {
-            params: { limit }
+            params: { limit, userId }
         });
         return response.data;
     } catch (error) {
@@ -48,7 +81,9 @@ export const fetchTrades = async (limit = 50) => {
 
 export const fetchActiveTrades = async () => {
     try {
-        const response = await axios.get(`${API_BASE_URL}/trades/active`);
+        const response = await axios.get(`${API_BASE_URL}/trades/active`, {
+            params: { userId }
+        });
         return response.data;
     } catch (error) {
         console.error('Error fetching active trades:', error);
@@ -58,7 +93,7 @@ export const fetchActiveTrades = async () => {
 
 export const manualTrade = async (action, quantity = 0.01) => {
     try {
-        const response = await axios.post(`${API_BASE_URL}/manual-trade`, { action, quantity });
+        const response = await axios.post(`${API_BASE_URL}/manual-trade`, withUserId({ action, quantity }));
         return response.data;
     } catch (error) {
         console.error(`Error executing ${action} trade:`, error);
@@ -68,7 +103,7 @@ export const manualTrade = async (action, quantity = 0.01) => {
 
 export const closeTrade = async (tradeId) => {
     try {
-        const response = await axios.post(`${API_BASE_URL}/trades/${tradeId}/close`);
+        const response = await axios.post(`${API_BASE_URL}/trades/${tradeId}/close`, withUserId());
         return response.data;
     } catch (error) {
         console.error(`Error closing trade ${tradeId}:`, error);
@@ -76,11 +111,11 @@ export const closeTrade = async (tradeId) => {
     }
 };
 
-export const exportTradesCsvUrl = `${API_BASE_URL}/trades/export`;
+export const exportTradesCsvUrl = `${API_BASE_URL}/trades/export?userId=${userId}`;
 
 export const recordTrade = async (tradeData) => {
     try {
-        const response = await axios.post(`${API_BASE_URL}/trades`, tradeData);
+        const response = await axios.post(`${API_BASE_URL}/trades`, withUserId(tradeData));
         return response.data;
     } catch (error) {
         console.error('Error recording trade:', error);
@@ -90,9 +125,17 @@ export const recordTrade = async (tradeData) => {
 
 // WebSocket service for real-time updates
 export const createPriceWebSocket = (onMessage) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname === 'localhost' ? 'localhost:5001' : window.location.host;
-    const ws = new WebSocket(`${protocol}//${host}`);
+    let wsUrl;
+    
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        wsUrl = 'ws://localhost:5001';
+    } else if (window.location.protocol === 'https:') {
+        wsUrl = `wss://${window.location.host}`;
+    } else {
+        wsUrl = `ws://${window.location.host}`;
+    }
+
+    const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
         console.log('WebSocket connected');

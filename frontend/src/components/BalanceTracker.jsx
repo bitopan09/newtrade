@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { fetchBalance, fetchPrice } from '../services/api';
+import { fetchBalance, fetchPrice, userId } from '../services/api';
 
 const BalanceTracker = () => {
     const [balanceData, setBalanceData] = useState(null);
@@ -52,6 +52,9 @@ const BalanceTracker = () => {
     return (
         <div className="balance-container">
             <h2>Balance Tracker</h2>
+            <div className="user-id-small" style={{ fontSize: '0.75em', color: '#64748b', marginBottom: '10px' }}>
+                User: {userId.substring(0, 12)}...
+            </div>
             <div className="balance-details">
                 <div className="balance-item">
                     <h3>USD Balance</h3>

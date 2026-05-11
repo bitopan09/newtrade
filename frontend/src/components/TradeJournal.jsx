@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { fetchTrades, exportTradesCsvUrl } from '../services/api';
+import { fetchTrades, exportTradesCsvUrl, userId } from '../services/api';
 import { formatTimeIST } from '../utils/timeFormatter';
 
 const TradeJournal = () => {
@@ -20,6 +20,9 @@ const TradeJournal = () => {
         };
 
         fetchTradesData();
+        // Refresh trades every 30 seconds
+        const interval = setInterval(fetchTradesData, 30000);
+        return () => clearInterval(interval);
     }, []);
 
     if (loading) {
@@ -34,13 +37,16 @@ const TradeJournal = () => {
     return (
         <div className="journal-container">
             <div className="journal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h2>Trade Journal</h2>
+                <div>
+                    <h2 style={{ marginBottom: '4px' }}>Trade Journal (Paper Trading)</h2>
+                    <small style={{ color: '#94a3b8', fontSize: '12px' }}>User: {userId.substring(0, 16)}...</small>
+                </div>
                 <a href={exportTradesCsvUrl} className="btn-export" download="trade_journal.csv">
-                    📥 Export to Excel / CSV
+                    📥 Export to Excel
                 </a>
             </div>
             {trades.length === 0 ? (
-                <p>No trades recorded yet.</p>
+                <p>No paper trades recorded yet.</p>
             ) : (
                 <table className="trade-table">
                     <thead>
@@ -71,7 +77,7 @@ const TradeJournal = () => {
                                 <td><span className={`status-${trade.status?.toLowerCase() || 'open'}`}>{trade.status || 'OPEN'}</span></td>
                                 <td>{trade.quantity}</td>
                                 <td className={trade.pnl >= 0 ? 'profit' : 'loss'}>
-                                    {trade.pnl !== null ? '₹' + trade.pnl.toFixed(2) : 'Open'}
+                                    {trade.pnl !== null ? '$' + trade.pnl.toFixed(2) : 'Open'}
                                 </td>
                                 <td>{trade.exit_reason || trade.notes || '-'}</td>
                             </tr>

@@ -7,10 +7,12 @@ import Backtester from './components/Backtester';
 import ManualTrade from './components/ManualTrade';
 import ActiveTrades from './components/ActiveTrades';
 import BotStatus from './components/BotStatus';
+import { userId } from './services/api';
 
 function App() {
     const [clock, setClock] = useState('');
     const [botOnline, setBotOnline] = useState(false);
+    const [apiConnected, setApiConnected] = useState(false);
 
     useEffect(() => {
         const tick = () => {
@@ -24,6 +26,20 @@ function App() {
         tick();
         const id = setInterval(tick, 1000);
 
+        // Check API connection
+        const checkAPI = async () => {
+            try {
+                const res = await fetch('/api/price');
+                if (res.ok) {
+                    setApiConnected(true);
+                } else {
+                    setApiConnected(false);
+                }
+            } catch { 
+                setApiConnected(false); 
+            }
+        };
+
         // Check bot status
         const checkBot = async () => {
             try {
@@ -32,10 +48,17 @@ function App() {
                 setBotOnline(data.bot?.isRunning || false);
             } catch { setBotOnline(false); }
         };
+
+        checkAPI();
         checkBot();
+        const apiInterval = setInterval(checkAPI, 15000);
         const botInterval = setInterval(checkBot, 15000);
 
-        return () => { clearInterval(id); clearInterval(botInterval); };
+        return () => { 
+            clearInterval(id); 
+            clearInterval(apiInterval); 
+            clearInterval(botInterval); 
+        };
     }, []);
 
     return (
@@ -51,10 +74,19 @@ function App() {
                 <div className="header-right">
                     <div className="header-clock">{clock}</div>
                     <div className="header-status">
+                        <span className={`status-dot ${apiConnected ? 'online' : 'offline'}`}></span>
+                        <span style={{ color: apiConnected ? '#10b981' : '#ef4444', fontSize: '12px' }}>
+                            {apiConnected ? 'API ✓' : 'API ✗'}
+                        </span>
+                    </div>
+                    <div className="header-status">
                         <span className={`status-dot ${botOnline ? 'online' : 'offline'}`}></span>
                         <span style={{ color: botOnline ? '#10b981' : '#ef4444' }}>
                             {botOnline ? 'BOT LIVE' : 'BOT OFF'}
                         </span>
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', minWidth: '140px', textAlign: 'right' }}>
+                        User: {userId.substring(5, 17)}...
                     </div>
                 </div>
             </header>
