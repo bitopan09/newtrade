@@ -454,37 +454,14 @@ app.post('/api/manual-trade', async (req, res) => {
                 return res.status(500).json({ error: 'Could not get current price' });
             }
             
-            // For paper trading, simulate the trade
-            const entryPrice = row.price;
-            const signal = { action: action.toUpperCase(), price: entryPrice };
+            const signal = { action: action.toUpperCase(), price: row.price };
+            const result = await tradingBot.executionEngine.executeTrade(signal, quantity || 0.01, user);
             
-            // Create paper trade record
-            const sl = action === 'BUY' ? entryPrice * 0.98 : entryPrice * 1.02;
-            const tp = action === 'BUY' ? entryPrice * 1.03 : entryPrice * 0.97;
-            
-            db.run(
-                `INSERT INTO trades (userId, action, entry_price, quantity, sl, tp1, status, trade_type) 
-                 VALUES (?, ?, ?, ?, ?, ?, 'OPEN', 'paper')`,
-                [user, action, entryPrice, quantity || 0.01, sl, tp],
-                function(err) {
-                    if (err) {
-                        return res.status(500).json({ error: err.message });
-                    }
-                    res.json({ 
-                        success: true,
-                        tradeId: this.lastID,
-                        message: `Paper ${action} trade opened at $${entryPrice.toFixed(2)}`,
-                        trade: {
-                            id: this.lastID,
-                            action,
-                            entryPrice,
-                            quantity: quantity || 0.01,
-                            sl,
-                            tp: tp
-                        }
-                    });
-                }
-            );
+            if (result.success) {
+                res.json(result);
+            } else {
+                res.status(400).json(result);
+            }
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -502,7 +479,7 @@ app.post('/api/trades/:id/close', async (req, res) => {
                 return res.status(500).json({ error: 'Could not get current price' });
             }
             
-            const result = tradingBot.executionEngine.manualExitTrade(tradeId, row.price);
+            const result = await tradingBot.executionEngine.manualExitTrade(tradeId, row.price);
             
             if (result.success) {
                 res.json(result);

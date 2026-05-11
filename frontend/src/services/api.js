@@ -6,10 +6,9 @@ let API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 // If running locally, use port 5001
 if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
     API_BASE_URL = 'http://localhost:5001/api';
-}
-
-// Support Railway URL format (railway.app domain)
-if (window.location.host.includes('railway.app') || window.location.host.includes('render.com')) {
+} else {
+    // For Railway/Render, if API_URL is not set, use the current origin
+    // Most cloud providers serve the API from the same domain
     API_BASE_URL = `${window.location.protocol}//${window.location.host}/api`;
 }
 
@@ -31,7 +30,7 @@ const withUserId = (data = {}) => ({
     userId: userId
 });
 
-export { userId };
+export { userId, API_BASE_URL };
 
 export const fetchPrice = async () => {
     try {
@@ -111,6 +110,16 @@ export const closeTrade = async (tradeId) => {
     }
 };
 
+export const runBacktest = async (days = 90, strategy = 'confluence_scoring') => {
+    try {
+        const response = await axios.post(`${API_BASE_URL}/backtest`, withUserId({ days, strategy }));
+        return response.data;
+    } catch (error) {
+        console.error('Error running backtest:', error);
+        throw error.response?.data || error;
+    }
+};
+
 export const exportTradesCsvUrl = `${API_BASE_URL}/trades/export?userId=${userId}`;
 
 export const recordTrade = async (tradeData) => {
@@ -129,10 +138,9 @@ export const createPriceWebSocket = (onMessage) => {
     
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         wsUrl = 'ws://localhost:5001';
-    } else if (window.location.protocol === 'https:') {
-        wsUrl = `wss://${window.location.host}`;
     } else {
-        wsUrl = `ws://${window.location.host}`;
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${protocol}//${window.location.host}`;
     }
 
     const ws = new WebSocket(wsUrl);

@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { formatTimeIST } from '../utils/timeFormatter';
+import { API_BASE_URL } from '../services/api';
 
 const BotStatus = () => {
     const [status, setStatus] = useState(null);
     const [loading, setLoading] = useState(true);
-    const API_BASE_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:5001/api' : '/api');
+
 
     useEffect(() => {
         const fetchStatus = async () => {
@@ -47,7 +48,7 @@ const BotStatus = () => {
                         <div className={`mini-trade-details ${todayTrade.action.toLowerCase()}`}>
                             <p><strong>{todayTrade.action}</strong> at ${todayTrade.entry_price.toFixed(2)}</p>
                             <p>Status: <span className={`status-${todayTrade.status.toLowerCase()}`}>{todayTrade.status}</span></p>
-                            {todayTrade.pnl !== null && <p>Result: <span className={todayTrade.pnl >= 0 ? 'profit' : 'loss'}>₹{todayTrade.pnl.toFixed(2)}</span></p>}
+                            {todayTrade.pnl !== null && <p>Result: <span className={todayTrade.pnl >= 0 ? 'profit' : 'loss'}>${todayTrade.pnl.toFixed(2)}</span></p>}
                             <p style={{ fontSize: '0.8rem', marginTop: '6px' }}>{formatTimeIST(todayTrade.timestamp, 'date-time')}</p>
                         </div>
                     ) : (

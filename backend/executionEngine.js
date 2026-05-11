@@ -53,44 +53,46 @@ class ExecutionEngine {
      * Execute a trade based on signal
      * @param {Object} signal - Trading signal from decision engine
      * @param {number} quantity - Trade quantity
+     * @param {string} userId - User ID for the trade
      * @returns {Promise<Object>} Execution result
      */
-    async executeTrade(signal, quantity = 0.01) {
+    async executeTrade(signal, quantity = 0.01, userId = 'default') {
         const { action, price } = signal;
 
         if (action === 'SKIP') {
             return { success: false, reason: 'Signal was to skip trade' };
         }
 
-        // Check if we already have an active trade (daily limit)
-        if (this.activeTrades.size > 0) {
-            return { success: false, reason: 'Already have an active trade' };
+        // Check user's active trades
+        const userTrades = Array.from(this.activeTrades.values()).filter(t => t.userId === userId);
+        if (userTrades.length >= 5) {
+            return { success: false, reason: 'Maximum active trades reached for this user' };
         }
 
-        // Simulate trade execution (in real implementation, this would call exchange API)
-        const entryPrice = price || 30000; // Use provided price or default
+        // Simulate trade execution
+        const entryPrice = price || 30000;
         const timestamp = new Date();
 
-        // Calculate SL/TP based on risk parameters (simplified)
-        const atr = 100; // Simplified ATR value
+        // Calculate SL/TP
+        const atr = 100;
         let sl, tp1, tp2;
         if (action === 'BUY') {
             sl = entryPrice - (atr * 0.7);
-            tp1 = entryPrice + (atr * 1.5); // 1:1 RR
-            tp2 = entryPrice + (atr * 3.0); // 1:3 RR
+            tp1 = entryPrice + (atr * 1.5);
+            tp2 = entryPrice + (atr * 3.0);
         } else if (action === 'SELL') {
             sl = entryPrice + (atr * 0.7);
-            tp1 = entryPrice - (atr * 1.5); // 1:1 RR
-            tp2 = entryPrice - (atr * 3.0); // 1:3 RR
+            tp1 = entryPrice - (atr * 1.5);
+            tp2 = entryPrice - (atr * 3.0);
         }
 
         return new Promise((resolve) => {
             const self = this;
             // Log to database
             this.db.run(
-                `INSERT INTO trades (action, entry_price, quantity, timestamp, status, sl, tp1, tp2) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                [action, entryPrice, quantity, timestamp.toISOString(), 'OPEN', sl, tp1, tp2],
+                `INSERT INTO trades (userId, action, entry_price, quantity, timestamp, status, sl, tp1, tp2, trade_type) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paper')`,
+                [userId, action, entryPrice, quantity, timestamp.toISOString(), 'OPEN', sl, tp1, tp2],
                 function (err) {
                     if (err) {
                         console.error('Error logging trade to database:', err);
@@ -101,6 +103,7 @@ class ExecutionEngine {
                     const tradeId = this.lastID;
                     const trade = {
                         id: tradeId,
+                        userId,
                         action,
                         entry_price: entryPrice,
                         quantity,
@@ -113,7 +116,7 @@ class ExecutionEngine {
                     self.activeTrades.set(tradeId, trade);
 
                     // Send alert
-                    self._sendAlert(`Trade executed: ${action} ${quantity} BTC at $${entryPrice.toFixed(2)}`);
+                    self._sendAlert(`[${userId}] Trade executed: ${action} ${quantity} BTC at $${entryPrice.toFixed(2)}`);
 
                     resolve({
                         success: true,
@@ -171,7 +174,7 @@ class ExecutionEngine {
      */
     _closeTrade(tradeId, exitPrice, reason) {
         const trade = this.activeTrades.get(tradeId);
-        if (!trade) return;
+        if (!trade) return { success: false, reason: 'Trade not in memory' };
 
         // Calculate PnL
         let pnl = 0;
@@ -188,19 +191,35 @@ class ExecutionEngine {
         trade.exit_reason = reason;
         trade.exit_timestamp = new Date();
 
+        const userId = trade.userId || 'default';
+
         // Update in database
         this.db.run(
             `UPDATE trades SET 
-       exit_price = ?, 
-       pnl = ?, 
-       status = ?, 
-       exit_reason = ?, 
-       exit_timestamp = ?
-       WHERE id = ?`,
+             exit_price = ?, 
+             pnl = ?, 
+             status = ?, 
+             exit_reason = ?, 
+             exit_timestamp = ?
+             WHERE id = ?`,
             [exitPrice, pnl, 'CLOSED', reason, new Date().toISOString(), tradeId],
-            function (err) {
+            (err) => {
                 if (err) {
                     console.error('Error updating trade in database:', err);
+                } else {
+                    // Update user balance
+                    this.db.get(`SELECT * FROM balance WHERE userId = ? ORDER BY timestamp DESC LIMIT 1`, [userId], (err, balance) => {
+                        if (!err && balance) {
+                            const newBalance = balance.usd_balance + pnl;
+                            this.db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, ?)`, 
+                                [userId, newBalance, balance.btc_balance]);
+                        } else if (!err && !balance) {
+                            // Create initial balance if missing (10k starting)
+                            const initialBalance = 10000 + pnl;
+                            this.db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, ?)`, 
+                                [userId, initialBalance, 0]);
+                        }
+                    });
                 }
             }
         );
@@ -287,13 +306,26 @@ class ExecutionEngine {
      * Manually close a trade at the current market price
      * @param {number} tradeId - Trade ID
      * @param {number} exitPrice - Current market price
-     * @returns {Object} Closure result
+     * @returns {Promise<Object>} Closure result
      */
-    manualExitTrade(tradeId, exitPrice) {
+    async manualExitTrade(tradeId, exitPrice) {
         if (!this.activeTrades.has(tradeId)) {
-            // If not in memory (due to server restart), we can't easily calculate PnL 
-            // without fetching from DB first. For now, let's assume it's in memory.
-            return { success: false, reason: 'Trade not found in active memory' };
+            // Fallback: Check database if not in memory
+            return new Promise((resolve) => {
+                this.db.get("SELECT * FROM trades WHERE id = ? AND status = 'OPEN'", [tradeId], (err, row) => {
+                    if (err || !row) {
+                        resolve({ success: false, reason: 'Trade not found or already closed' });
+                    } else {
+                        // Add to memory temporarily to use _closeTrade logic
+                        const trade = {
+                            ...row,
+                            timestamp: new Date(row.timestamp)
+                        };
+                        this.activeTrades.set(tradeId, trade);
+                        resolve(this._closeTrade(tradeId, exitPrice, 'Manual Exit'));
+                    }
+                });
+            });
         }
         return this._closeTrade(tradeId, exitPrice, 'Manual Exit');
     }

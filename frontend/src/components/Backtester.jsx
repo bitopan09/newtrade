@@ -1,37 +1,14 @@
 import React, { useState } from 'react';
-import { userId } from '../services/api';
+import { runBacktest as runBacktestService, userId } from '../services/api';
 
 const Backtester = () => {
     const [results, setResults] = useState(null);
     const [isRunning, setIsRunning] = useState(false);
-    const API_URL = (() => {
-        const base = import.meta.env.VITE_API_URL || '/api';
-        if (window.location.hostname === 'localhost') return 'http://localhost:5001/api';
-        return base;
-    })();
 
     const runBacktest = async () => {
         setIsRunning(true);
         try {
-            // In a real implementation, this would send a request to the backend
-            // to run a backtest on historical data
-            const response = await fetch(`${API_URL}/backtest`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    days: 90,
-                    strategy: 'confluence_scoring',
-                    userId: userId
-                })
-            });
-
-            if (!response.ok) {
-                throw new Error(`Backtest failed: ${response.status}`);
-            }
-
-            const data = await response.json();
+            const data = await runBacktestService(90, 'confluence_scoring');
             setResults(data);
         } catch (error) {
             console.error('Backtest failed:', error);
@@ -46,7 +23,8 @@ const Backtester = () => {
                 equityCurve: Array.from({ length: 30 }, (_, i) => ({
                     day: i + 1,
                     equity: 100 + (i * 0.8) + (Math.sin(i * 0.3) * 5)
-                }))
+                })),
+                trades: [] // Added empty trades array to prevent crash
             };
 
             setResults(mockResults);
@@ -54,6 +32,7 @@ const Backtester = () => {
             setIsRunning(false);
         }
     };
+
 
     const downloadCsv = () => {
         if (!results) return;

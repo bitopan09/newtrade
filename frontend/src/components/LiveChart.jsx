@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { createPriceWebSocket } from '../services/api';
+import { createPriceWebSocket, API_BASE_URL } from '../services/api';
 
 const LiveChart = () => {
     const [priceData, setPriceData] = useState([]);
@@ -29,7 +29,7 @@ const LiveChart = () => {
         // Also fetch initial historical data
         const fetchInitialData = async () => {
             try {
-                const response = await fetch('/api/prices?limit=50');
+                const response = await fetch(`${API_BASE_URL}/prices?limit=50`);
                 if (response.ok) {
                     const data = await response.json();
                     setPriceData(
