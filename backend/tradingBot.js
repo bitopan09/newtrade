@@ -200,6 +200,25 @@ class TradingBot {
     async getRecentTrades(limit = 10) {
         return await this.executionEngine.getTrades(limit);
     }
+
+    /**
+     * Placeholder for backtesting logic
+     * @param {number} days - Number of days to backtest
+     * @param {string} strategy - Strategy name
+     * @returns {Promise<Object>} Backtest results
+     */
+    async runBacktest(days, strategy) {
+        return {
+            totalTrades: 0,
+            winRate: 0,
+            profitFactor: 0,
+            maxDrawdown: 0,
+            sharpeRatio: 0,
+            totalReturn: 0,
+            equityCurve: [],
+            trades: []
+        };
+    }
 }
 
 module.exports = TradingBot;

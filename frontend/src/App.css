@@ -732,7 +732,7 @@ h2::before {
 }
 
 /* ===== RESPONSIVE ===== */
-@media (max-width: 1200px) {
+@media (max-width: 1280px) {
   .dashboard-grid { grid-template-columns: 1fr; }
   .balance-details { grid-template-columns: repeat(2, 1fr); }
   .results-grid { grid-template-columns: repeat(3, 1fr); }

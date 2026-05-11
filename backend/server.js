@@ -75,7 +75,7 @@ db.serialize(() => {
     // Initialize balance for default user if needed
     db.get(`SELECT COUNT(*) as count FROM balance WHERE userId = 'default'`, [], (err, row) => {
         if (!err && row.count === 0) {
-            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES ('default', 10000, 0)`);
+            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES ('default', 100, 0)`);
         }
     });
 
@@ -147,8 +147,8 @@ app.get('/api/balance', (req, res) => {
         }
         // Create default balance for new users
         if (!row) {
-            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, 10000, 0)`, [userId], function() {
-                res.json({ userId, usd_balance: 10000, btc_balance: 0, id: this.lastID });
+            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, 100, 0)`, [userId], function() {
+                res.json({ userId, usd_balance: 100, btc_balance: 0, id: this.lastID });
             });
         } else {
             res.json(row || {});
@@ -245,199 +245,17 @@ app.post('/api/backtest', async (req, res) => {
         
         console.log(`Running backtest for ${days} days using ${strategy} strategy...`);
 
-        // Try to fetch real data from Bybit API
-        let priceData = [];
-        try {
-            const symbol = 'BTCUSDT';
-            const interval = '4h'; // 4-hour candles for 90 days = 540 candles
-            
-            const response = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=360`);
-            if (!response.ok) throw new Error('API error');
-            
-            const json = await response.json();
-            if (json.retCode !== 0 || !json.result?.list) throw new Error('Invalid response');
-            
-            const klines = json.result.list.reverse();
-            priceData = klines.map(k => ({
-                timestamp: new Date(parseInt(k[0])).toISOString(),
-                open: parseFloat(k[1]),
-                high: parseFloat(k[2]),
-                low: parseFloat(k[3]),
-                close: parseFloat(k[4]),
-                volume: parseFloat(k[5])
-            }));
-        } catch (fetchError) {
-            console.log('Real data fetch failed, using synthetic data:', fetchError.message);
-            // Generate synthetic price data if API fails
-            let price = 45000;
-            priceData = Array.from({ length: 360 }, (_, i) => {
-                price += (Math.random() - 0.5) * 500;
-                const drift = price * 0.0001;
-                return {
-                    timestamp: new Date(Date.now() - (360 - i) * 4 * 60 * 60 * 1000).toISOString(),
-                    open: price,
-                    high: price + Math.random() * 200,
-                    low: price - Math.random() * 200,
-                    close: price + drift,
-                    volume: Math.random() * 1000
-                };
-            });
-        }
+        // This is a placeholder for real backtesting logic
+        // In a real implementation, you would:
+        // 1. Fetch historical data for the requested period
+        // 2. Run the strategy against this data
+        // 3. Calculate performance metrics
 
-        if (priceData.length < 50) {
-            return res.status(400).json({ error: 'Insufficient historical data' });
-        }
-
-        // Simple backtest strategy
-        const trades = [];
-        let equity = 10000; // $10,000 starting
-        const equityCurve = [];
-        let position = null;
-        let lastTradeIndex = -20;
-
-        for (let i = 20; i < priceData.length; i++) {
-            const current = priceData[i];
-            const prev = priceData[i - 1];
-            const dayAgo = priceData[Math.max(0, i - 6)];
-            
-            // Track equity
-            if (i % 6 === 0) {
-                equityCurve.push({
-                    day: equityCurve.length + 1,
-                    equity: equity
-                });
-            }
-
-            // Close position if exists
-            if (position) {
-                const pnl = position.type === 'BUY' 
-                    ? (current.close - position.entryPrice) * position.quantity
-                    : (position.entryPrice - current.close) * position.quantity;
-                
-                let shouldClose = false;
-                if (position.type === 'BUY' && current.close <= position.sl) {
-                    shouldClose = true;
-                } else if (position.type === 'BUY' && current.close >= position.tp) {
-                    shouldClose = true;
-                } else if (position.type === 'SELL' && current.close >= position.sl) {
-                    shouldClose = true;
-                } else if (position.type === 'SELL' && current.close <= position.tp) {
-                    shouldClose = true;
-                }
-
-                if (shouldClose) {
-                    equity += pnl;
-                    trades.push({
-                        id: trades.length + 1,
-                        timestamp: current.timestamp,
-                        action: position.type,
-                        entryPrice: position.entryPrice,
-                        exitPrice: current.close,
-                        quantity: position.quantity,
-                        sl: position.sl,
-                        tp: position.tp,
-                        pnl: pnl,
-                        status: 'CLOSED'
-                    });
-                    position = null;
-                }
-            }
-
-            // Simple momentum-based entry (one trade every 20 candles)
-            if (!position && i - lastTradeIndex >= 20) {
-                const recentHigh = Math.max(...priceData.slice(Math.max(0, i - 10), i).map(p => p.high));
-                const recentLow = Math.min(...priceData.slice(Math.max(0, i - 10), i).map(p => p.low));
-                const range = recentHigh - recentLow;
-                const midpoint = (recentHigh + recentLow) / 2;
-
-                // Entry signal
-                if (current.close > midpoint && prev.close <= midpoint) {
-                    // BUY signal
-                    const entryPrice = current.close;
-                    const sl = entryPrice - range * 0.5;
-                    const tp = entryPrice + range * 1.5;
-                    const riskAmount = equity * 0.02; // 2% risk per trade
-                    const slDistance = entryPrice - sl;
-                    const quantity = slDistance > 0 ? riskAmount / slDistance : 0.01;
-
-                    if (quantity > 0) {
-                        position = {
-                            type: 'BUY',
-                            entryPrice: entryPrice,
-                            sl: sl,
-                            tp: tp,
-                            quantity: quantity
-                        };
-                        lastTradeIndex = i;
-                    }
-                } else if (current.close < midpoint && prev.close >= midpoint) {
-                    // SELL signal
-                    const entryPrice = current.close;
-                    const sl = entryPrice + range * 0.5;
-                    const tp = entryPrice - range * 1.5;
-                    const riskAmount = equity * 0.02;
-                    const slDistance = sl - entryPrice;
-                    const quantity = slDistance > 0 ? riskAmount / slDistance : 0.01;
-
-                    if (quantity > 0) {
-                        position = {
-                            type: 'SELL',
-                            entryPrice: entryPrice,
-                            sl: sl,
-                            tp: tp,
-                            quantity: quantity
-                        };
-                        lastTradeIndex = i;
-                    }
-                }
-            }
-        }
-
-        // Calculate metrics
-        const completedTrades = trades.filter(t => t.status === 'CLOSED');
-        const wins = completedTrades.filter(t => t.pnl > 0);
-        const losses = completedTrades.filter(t => t.pnl < 0);
+        const results = await tradingBot.runBacktest(days, strategy);
         
-        const totalProfit = wins.reduce((sum, t) => sum + t.pnl, 0);
-        const totalLoss = Math.abs(losses.reduce((sum, t) => sum + t.pnl, 0));
-        const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 10 : 0;
-        const winRate = completedTrades.length > 0 ? wins.length / completedTrades.length : 0;
-
-        // Calculate drawdown
-        let maxEquity = 10000;
-        let maxDrawdown = 0;
-        equityCurve.forEach(point => {
-            if (point.equity > maxEquity) maxEquity = point.equity;
-            const dd = (maxEquity - point.equity) / maxEquity;
-            if (dd > maxDrawdown) maxDrawdown = dd;
-        });
-
-        const finalEquity = equity;
-        const totalReturn = (finalEquity - 10000) / 10000;
-
-        res.json({
-            totalTrades: completedTrades.length,
-            winRate: Math.max(0, Math.min(1, winRate)),
-            profitFactor: Math.min(profitFactor, 100),
-            maxDrawdown: maxDrawdown,
-            sharpeRatio: totalReturn > 0 ? 1.5 : 0.5,
-            totalReturn: totalReturn,
-            equityCurve: equityCurve.length > 0 ? equityCurve : [{day: 1, equity: 10000}],
-            trades: completedTrades.slice(0, 50).map(t => ({
-                id: t.id,
-                timestamp: t.timestamp,
-                action: t.action,
-                entryPrice: t.entryPrice,
-                exitPrice: t.exitPrice,
-                quantity: t.quantity,
-                sl: t.sl,
-                tp: t.tp,
-                pnl: t.pnl
-            }))
-        });
+        res.json(results);
     } catch (error) {
-        console.error('Backtest error:', error);
-        res.status(500).json({ error: 'Backtest failed: ' + error.message });
+        res.status(500).json({ error: error.message });
     }
 });
 

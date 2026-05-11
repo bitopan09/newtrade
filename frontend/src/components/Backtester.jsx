@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { runBacktest as runBacktestService, userId } from '../services/api';
 
 const Backtester = () => {
     const [results, setResults] = useState(null);
@@ -8,7 +7,24 @@ const Backtester = () => {
     const runBacktest = async () => {
         setIsRunning(true);
         try {
-            const data = await runBacktestService(90, 'confluence_scoring');
+            // In a real implementation, this would send a request to the backend
+            // to run a backtest on historical data
+            const response = await fetch('/api/backtest', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    days: 90,
+                    strategy: 'confluence_scoring'
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Backtest failed: ${response.status}`);
+            }
+
+            const data = await response.json();
             setResults(data);
         } catch (error) {
             console.error('Backtest failed:', error);
@@ -23,8 +39,7 @@ const Backtester = () => {
                 equityCurve: Array.from({ length: 30 }, (_, i) => ({
                     day: i + 1,
                     equity: 100 + (i * 0.8) + (Math.sin(i * 0.3) * 5)
-                })),
-                trades: [] // Added empty trades array to prevent crash
+                }))
             };
 
             setResults(mockResults);
@@ -32,7 +47,6 @@ const Backtester = () => {
             setIsRunning(false);
         }
     };
-
 
     const downloadCsv = () => {
         if (!results) return;

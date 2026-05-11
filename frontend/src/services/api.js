@@ -8,7 +8,6 @@ if (window.location.hostname === 'localhost' || window.location.hostname === '12
     API_BASE_URL = 'http://localhost:5001/api';
 } else {
     // For Railway/Render, if API_URL is not set, use the current origin
-    // Most cloud providers serve the API from the same domain
     API_BASE_URL = `${window.location.protocol}//${window.location.host}/api`;
 }
 
@@ -106,16 +105,6 @@ export const closeTrade = async (tradeId) => {
         return response.data;
     } catch (error) {
         console.error(`Error closing trade ${tradeId}:`, error);
-        throw error.response?.data || error;
-    }
-};
-
-export const runBacktest = async (days = 90, strategy = 'confluence_scoring') => {
-    try {
-        const response = await axios.post(`${API_BASE_URL}/backtest`, withUserId({ days, strategy }));
-        return response.data;
-    } catch (error) {
-        console.error('Error running backtest:', error);
         throw error.response?.data || error;
     }
 };
