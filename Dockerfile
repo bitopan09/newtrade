@@ -1,22 +1,19 @@
-FROM node:18-alpine
+FROM node:20
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy root package files
 COPY package.json package-lock.json* ./
 
-# Install dependencies
-RUN npm install --legacy-peer-deps
+# Install root dependencies (including sqlite3 and backend packages)
+RUN npm install
 
-# Copy backend files
-COPY backend ./backend
+# Copy all source files
+COPY . .
 
-# Copy frontend build (if exists)
-COPY frontend/dist ./frontend/dist
-
-# Copy environment
-COPY .env* ./
+# Build the frontend (runs 'cd frontend && npm install && npm run build')
+RUN npm run build
 
 # Expose port
 EXPOSE 5001
