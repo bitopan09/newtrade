@@ -6,8 +6,8 @@ WORKDIR /app
 # Copy root package files
 COPY package.json package-lock.json* ./
 
-# Install root dependencies (including sqlite3 and backend packages)
-RUN npm install
+# Install root dependencies and force sqlite3 to build from source against local GLIBC
+RUN npm install && npm rebuild sqlite3 --build-from-source
 
 # Copy all source files
 COPY . .
