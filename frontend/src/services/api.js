@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:5001/api' : '/api');
 
 export const fetchPrice = async () => {
     try {
@@ -91,8 +91,8 @@ export const recordTrade = async (tradeData) => {
 // WebSocket service for real-time updates
 export const createPriceWebSocket = (onMessage) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const ws = new WebSocket(`${protocol}//${host}:5001`);
+    const host = window.location.hostname === 'localhost' ? 'localhost:5001' : window.location.host;
+    const ws = new WebSocket(`${protocol}//${host}`);
 
     ws.onopen = () => {
         console.log('WebSocket connected');
