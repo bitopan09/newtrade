@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { API_BASE_URL, userId } from '../services/api';
 
 const Backtester = () => {
     const [results, setResults] = useState(null);
@@ -9,14 +10,15 @@ const Backtester = () => {
         try {
             // In a real implementation, this would send a request to the backend
             // to run a backtest on historical data
-            const response = await fetch('/api/backtest', {
+            const response = await fetch(`${API_BASE_URL}/backtest`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
                     days: 90,
-                    strategy: 'confluence_scoring'
+                    strategy: 'confluence_scoring',
+                    userId: userId
                 })
             });
 
