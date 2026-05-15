@@ -2,6 +2,7 @@ const AnalysisEngine = require('./analysisEngine');
 const DecisionEngine = require('./decisionEngine');
 const ExecutionEngine = require('./executionEngine');
 const emailService = require('./emailService');
+const fetch = require('node-fetch');
 
 class TradingBot {
     constructor(db) {
@@ -214,64 +215,116 @@ class TradingBot {
             // 1. Try fetching historical data - multiple sources for reliability
             let historicalData = null;
             
-            // Try Bybit first
+            // Try Coinbase first (less likely to be blocked)
             try {
-                console.log('Attempting to fetch from Bybit API...');
-                const symbol = 'BTCUSDT';
-                const interval = days > 30 ? '240' : '60'; // 4h or 1h candles
-                const limit = days > 30 ? 500 : 720;
+                console.log('Attempting to fetch from Coinbase API...');
+                const productId = 'BTC-USD';
+                // Coinbase valid granularities: 60, 300, 900, 3600 (1h), 21600 (6h), 86400 (1d)
+                const granularity = days > 30 ? 21600 : 3600; // 6h or 1h candles
+                const totalLimit = days > 30 ? 500 : 720;
                 
-                const response = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=${limit}`, {
-                    timeout: 10000
-                });
-                const json = await response.json();
+                let end = Math.floor(Date.now() / 1000);
+                let allCandles = [];
+                let remaining = totalLimit;
                 
-                if (json.retCode === 0 && json.result?.list) {
-                    historicalData = json.result.list.reverse().map(k => ({
-                        timestamp: new Date(parseInt(k[0])),
-                        open: parseFloat(k[1]),
-                        high: parseFloat(k[2]),
-                        low: parseFloat(k[3]),
-                        close: parseFloat(k[4]),
-                        volume: parseFloat(k[5]),
-                        price: parseFloat(k[4])
-                    }));
-                    console.log(`✓ Fetched ${historicalData.length} candles from Bybit`);
-                } else {
-                    throw new Error('Invalid Bybit response');
-                }
-            } catch (bybitError) {
-                console.warn('Bybit API failed, trying Binance...', bybitError.message);
-                
-                // Fallback to Binance
-                try {
-                    const symbol = 'BTCUSDT';
-                    const interval = days > 30 ? '4h' : '1h';
-                    const limit = days > 30 ? 500 : 720;
+                while (remaining > 0) {
+                    const chunkLimit = Math.min(remaining, 300); // Coinbase max is 300
+                    const start = end - (chunkLimit * granularity);
                     
-                    const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, {
-                        timeout: 10000
+                    const response = await fetch(`https://api.exchange.coinbase.com/products/${productId}/candles?granularity=${granularity}&start=${start}&end=${end}`, {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0',
+                            'Accept': 'application/json'
+                        }
                     });
                     
-                    if (!response.ok) throw new Error('Binance API error');
+                    if (!response.ok) {
+                        throw new Error(`Coinbase API error: ${response.status}`);
+                    }
+                    
+                    const json = await response.json();
+                    if (!json || json.length === 0) break;
+                    
+                    allCandles = allCandles.concat(json);
+                    
+                    end = start; // Next chunk ends where this one started
+                    remaining -= chunkLimit;
+                    
+                    // Small delay to respect rate limits
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                
+                historicalData = allCandles.map(k => ({
+                    timestamp: new Date(parseInt(k[0]) * 1000),
+                    low: parseFloat(k[1]),
+                    high: parseFloat(k[2]),
+                    open: parseFloat(k[3]),
+                    close: parseFloat(k[4]),
+                    volume: parseFloat(k[5]),
+                    price: parseFloat(k[4])
+                }));
+                
+                historicalData = historicalData.reverse();
+                console.log(`✓ Fetched ${historicalData.length} candles from Coinbase`);
+                
+            } catch (coinbaseError) {
+                console.warn('Coinbase API failed, trying Bybit...', coinbaseError.message);
+                
+                // Try Bybit
+                try {
+                    console.log('Attempting to fetch from Bybit API...');
+                    const symbol = 'BTCUSDT';
+                    const interval = days > 30 ? '240' : '60'; // 4h or 1h candles
+                    const limit = days > 30 ? 500 : 720;
+                    
+                    const response = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=${limit}`);
                     const json = await response.json();
                     
-                    historicalData = json.map(k => ({
-                        timestamp: new Date(k[0]),
-                        open: parseFloat(k[1]),
-                        high: parseFloat(k[2]),
-                        low: parseFloat(k[3]),
-                        close: parseFloat(k[4]),
-                        volume: parseFloat(k[7]),
-                        price: parseFloat(k[4])
-                    }));
-                    console.log(`✓ Fetched ${historicalData.length} candles from Binance`);
-                } catch (binanceError) {
-                    console.warn('Binance API also failed, using synthetic data...', binanceError.message);
+                    if (json.retCode === 0 && json.result?.list) {
+                        historicalData = json.result.list.reverse().map(k => ({
+                            timestamp: new Date(parseInt(k[0])),
+                            open: parseFloat(k[1]),
+                            high: parseFloat(k[2]),
+                            low: parseFloat(k[3]),
+                            close: parseFloat(k[4]),
+                            volume: parseFloat(k[5]),
+                            price: parseFloat(k[4])
+                        }));
+                        console.log(`✓ Fetched ${historicalData.length} candles from Bybit`);
+                    } else {
+                        throw new Error('Invalid Bybit response');
+                    }
+                } catch (bybitError) {
+                    console.warn('Bybit API failed, trying Binance...', bybitError.message);
                     
-                    // Generate synthetic realistic data based on last known prices
-                    historicalData = this._generateSyntheticData(days > 30 ? 500 : 720);
-                    console.log(`✓ Generated ${historicalData.length} synthetic candles`);
+                    // Fallback to Binance
+                    try {
+                        const symbol = 'BTCUSDT';
+                        const interval = days > 30 ? '4h' : '1h';
+                        const limit = days > 30 ? 500 : 720;
+                        
+                        const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+                        
+                        if (!response.ok) throw new Error('Binance API error');
+                        const json = await response.json();
+                        
+                        historicalData = json.map(k => ({
+                            timestamp: new Date(k[0]),
+                            open: parseFloat(k[1]),
+                            high: parseFloat(k[2]),
+                            low: parseFloat(k[3]),
+                            close: parseFloat(k[4]),
+                            volume: parseFloat(k[5]),
+                            price: parseFloat(k[4])
+                        }));
+                        console.log(`✓ Fetched ${historicalData.length} candles from Binance`);
+                    } catch (binanceError) {
+                        console.warn('Binance API also failed, using synthetic data...', binanceError.message);
+                        
+                        // Generate synthetic realistic data based on last known prices
+                        historicalData = this._generateSyntheticData(days > 30 ? 500 : 720);
+                        console.log(`✓ Generated ${historicalData.length} synthetic candles`);
+                    }
                 }
             }
 
