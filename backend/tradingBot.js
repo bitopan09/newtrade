@@ -84,74 +84,85 @@ class TradingBot {
      */
     async _analyzeAndTrade() {
         try {
-            // Get latest prices from DB
-            return new Promise((resolve) => {
-                this.db.all('SELECT price, volume, timestamp FROM prices ORDER BY timestamp DESC LIMIT ?', [this.maxDataPoints], async (err, rows) => {
-                    if (err || !rows || rows.length === 0) {
-                        resolve();
-                        return;
-                    }
-
-                    // Format for analysis (reverse to get chronological order)
-                    this.priceData = rows.map(r => ({
-                        price: r.price,
-                        volume: r.volume,
-                        timestamp: new Date(r.timestamp)
-                    })).reverse();
-
-                    // Make sure we have enough data for analysis
-                    if (this.priceData.length < 20) {
-                        console.log('Waiting for sufficient price data...');
-                        resolve();
-                        return;
-                    }
-
-                    // Perform analysis and make decision
-                    const decision = await this.decisionEngine.makeDecision(this.priceData);
-                    this.lastAnalysisTime = new Date().toISOString();
-
-                    console.log(`[${this.lastAnalysisTime}] Decision: ${decision.action} - ${decision.reason}`);
-
-                    // If decision is to trade, execute it
-                    if (decision.action === 'BUY' || decision.action === 'SELL') {
-                        const currentPrice = this.priceData[this.priceData.length - 1].price;
-                        const riskParams = decision.details.analysis.riskCalculator;
-                        const sl = decision.action === 'BUY' ? riskParams.stopLoss.long : riskParams.stopLoss.short;
-                        const tp = decision.action === 'BUY' ? riskParams.takeProfit.tp1Long : riskParams.takeProfit.tp1Short;
-                        const riskAmount = 2.50;
-                        const slDistance = Math.abs(currentPrice - sl);
-                        const quantity = slDistance > 0 ? riskAmount / slDistance : 0.001;
-
-                        const signal = {
-                            action: decision.action,
-                            price: currentPrice,
-                            quantity: quantity,
-                            sl: sl,
-                            tp1: tp,
-                            score: decision.details.score,
-                            notes: decision.details.analysis.confluenceScorer?.details || ''
-                        };
-
-                        const result = await this.executionEngine.executeTrade(signal);
-
-                        if (result.success) {
-                            console.log(`Trade executed: ${result.message}`);
-                            // Send email notification for auto-trade
-                            if (process.env.SEND_EMAIL_ON_TRADE === 'true') {
-                                emailService.sendTradeNotification(result.trade, `AUTO ${result.trade.action}`);
-                            }
-                        } else {
-                            console.log(`Trade execution failed: ${result.reason}`);
-                        }
-                    }
-
-                    // Monitor active trades for SL/TP hits
-                    const currentPrice = this.priceData[this.priceData.length - 1].price;
-                    this.executionEngine.monitorTrades(currentPrice);
-                    resolve();
-                });
+            // Fetch live 6H candles from Coinbase for proper institutional analysis
+            const productId = 'BTC-USD';
+            const granularity = 21600; // 6h candles
+            
+            const response = await fetch(`https://api.exchange.coinbase.com/products/${productId}/candles?granularity=${granularity}`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0',
+                    'Accept': 'application/json'
+                }
             });
+            
+            if (!response.ok) {
+                console.error('Failed to fetch live candles for analysis:', response.status);
+                return;
+            }
+            
+            const json = await response.json();
+            if (!json || json.length === 0) return;
+            
+            // Format for analysis (reverse to get chronological order)
+            this.priceData = json.map(candle => ({
+                timestamp: new Date(candle[0] * 1000),
+                open: candle[3],
+                high: candle[2],
+                low: candle[1],
+                close: candle[4],
+                volume: candle[5],
+                price: candle[4]
+            })).reverse();
 
+            // Perform analysis and make decision
+            const decision = await this.decisionEngine.makeDecision(this.priceData);
+            this.lastAnalysisTime = new Date().toISOString();
+
+            console.log(`[${this.lastAnalysisTime}] Decision: ${decision.action} - ${decision.reason}`);
+
+            // If decision is to trade, execute it
+            if (decision.action === 'BUY' || decision.action === 'SELL') {
+                const currentPrice = this.priceData[this.priceData.length - 1].price;
+                const riskParams = decision.details.analysis.riskCalculator;
+                const sl = decision.action === 'BUY' ? riskParams.stopLoss.long : riskParams.stopLoss.short;
+                const tp = decision.action === 'BUY' ? riskParams.takeProfit.tp1Long : riskParams.takeProfit.tp1Short;
+                const riskAmount = 2.50;
+                const slDistance = Math.abs(currentPrice - sl);
+                const quantity = slDistance > 0 ? riskAmount / slDistance : 0.001;
+
+                const signal = {
+                    action: decision.action,
+                    price: currentPrice,
+                    quantity: quantity,
+                    sl: sl,
+                    tp1: tp,
+                    score: decision.details.score,
+                    notes: decision.details.analysis.confluenceScorer?.details || ''
+                };
+
+                const result = await this.executionEngine.executeTrade(signal);
+
+                if (result.success) {
+                    console.log(`Trade executed: ${result.message}`);
+                    // Send email notification for auto-trade
+                    if (process.env.SEND_EMAIL_ON_TRADE === 'true') {
+                        emailService.sendTradeNotification(result.trade, `AUTO ${result.trade.action}`);
+                    }
+                } else {
+                    console.log(`Trade execution failed: ${result.reason}`);
+                }
+            }
+
+            // Monitor active trades for SL/TP hits using the latest real-time tick price
+            this.db.get('SELECT price FROM prices ORDER BY timestamp DESC LIMIT 1', (err, row) => {
+                if (!err && row) {
+                    this.executionEngine.monitorTrades(row.price);
+                } else {
+                    // Fallback to the latest candle close price if DB fetch fails
+                    this.executionEngine.monitorTrades(this.priceData[this.priceData.length - 1].price);
+                }
+            });
+            
         } catch (error) {
             console.error('Error in trading loop:', error);
         }
