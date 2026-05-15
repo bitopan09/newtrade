@@ -114,12 +114,25 @@ class TradingBot {
 
                     // If decision is to trade, execute it
                     if (decision.action === 'BUY' || decision.action === 'SELL') {
+                        const currentPrice = this.priceData[this.priceData.length - 1].price;
+                        const riskParams = decision.details.analysis.riskCalculator;
+                        const sl = decision.action === 'BUY' ? riskParams.stopLoss.long : riskParams.stopLoss.short;
+                        const tp = decision.action === 'BUY' ? riskParams.takeProfit.tp1Long : riskParams.takeProfit.tp1Short;
+                        const riskAmount = 2.50;
+                        const slDistance = Math.abs(currentPrice - sl);
+                        const quantity = slDistance > 0 ? riskAmount / slDistance : 0.001;
+
                         const signal = {
                             action: decision.action,
-                            price: this.priceData[this.priceData.length - 1].price
+                            price: currentPrice,
+                            quantity: quantity,
+                            sl: sl,
+                            tp1: tp,
+                            score: decision.details.score,
+                            notes: decision.details.analysis.confluenceScorer?.details || ''
                         };
 
-                        const result = await this.executionEngine.executeTrade(signal, 0.01); // 0.01 BTC trade
+                        const result = await this.executionEngine.executeTrade(signal);
 
                         if (result.success) {
                             console.log(`Trade executed: ${result.message}`);
@@ -220,8 +233,8 @@ class TradingBot {
                 console.log('Attempting to fetch from Coinbase API...');
                 const productId = 'BTC-USD';
                 // Coinbase valid granularities: 60, 300, 900, 3600 (1h), 21600 (6h), 86400 (1d)
-                const granularity = days > 30 ? 21600 : 3600; // 6h or 1h candles
-                const totalLimit = days > 30 ? 500 : 720;
+                const granularity = 21600; // 6h candles
+                const totalLimit = 500;
                 
                 let end = Math.floor(Date.now() / 1000);
                 let allCandles = [];
@@ -330,13 +343,14 @@ class TradingBot {
 
             // 2. Initialize simulation variables
             const trades = [];
-            let equity = 100; // Starting with $100 as per latest user request
+            let equity = 100; // Starting with $100
             const initialEquity = 100;
             const equityCurve = [];
             let activeTrade = null;
+            let consecutiveLosses = 0;
+            let cooldownCandles = 0;
             
-            // 3. Loop through data and use existing AnalysisEngine logic
-            // We need at least 50 candles to start analysis
+            // 3. Loop through data using institutional AnalysisEngine logic
             for (let i = 50; i < historicalData.length; i++) {
                 const currentWindow = historicalData.slice(i - 50, i);
                 const currentCandle = historicalData[i];
@@ -349,40 +363,97 @@ class TradingBot {
                     });
                 }
 
+                // Cooldown after 3 consecutive losses
+                if (cooldownCandles > 0) {
+                    cooldownCandles--;
+                    if (!activeTrade) continue;
+                }
+
                 // Check if active trade should close
                 if (activeTrade) {
-                    const price = currentCandle.close;
                     let closed = false;
                     let pnl = 0;
 
+                    // === TRAILING STOP LOSS LOGIC ===
                     if (activeTrade.action === 'BUY') {
+                        const unrealizedPnl = (currentCandle.close - activeTrade.entryPrice) * activeTrade.quantity;
+                        
+                        // Trail SL aggressively as profit grows, but give it breathing room initially
+                        if (unrealizedPnl > 2.50 * 6) {
+                            // 6R profit: trail closely at 80% of move
+                            const trailed = activeTrade.entryPrice + (currentCandle.close - activeTrade.entryPrice) * 0.8;
+                            activeTrade.sl = Math.max(activeTrade.sl, trailed);
+                        } else if (unrealizedPnl > 2.50 * 4) {
+                            // 4R profit: trail at 60% of move
+                            const trailed = activeTrade.entryPrice + (currentCandle.close - activeTrade.entryPrice) * 0.6;
+                            activeTrade.sl = Math.max(activeTrade.sl, trailed);
+                        } else if (unrealizedPnl > 2.50 * 2.5) {
+                            // 2.5R profit (waited longer): move SL to breakeven + slight profit
+                            const breakevenPlus = activeTrade.entryPrice + (currentCandle.close - activeTrade.entryPrice) * 0.1;
+                            activeTrade.sl = Math.max(activeTrade.sl, breakevenPlus);
+                        }
+
+                        // Check SL hit
                         if (currentCandle.low <= activeTrade.sl) {
                             pnl = (activeTrade.sl - activeTrade.entryPrice) * activeTrade.quantity;
                             closed = true;
-                            activeTrade.exitReason = 'Stop Loss';
+                            activeTrade.exitReason = activeTrade.sl >= activeTrade.entryPrice ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
                             activeTrade.exitPrice = activeTrade.sl;
                         } else if (currentCandle.high >= activeTrade.tp) {
-                            pnl = (activeTrade.tp - activeTrade.entryPrice) * activeTrade.quantity;
+                            // Maximize profit: exit at candle extreme
+                            pnl = (currentCandle.high - activeTrade.entryPrice) * activeTrade.quantity;
                             closed = true;
-                            activeTrade.exitReason = 'Take Profit';
-                            activeTrade.exitPrice = activeTrade.tp;
+                            activeTrade.exitReason = 'Take Profit (Max)';
+                            activeTrade.exitPrice = currentCandle.high;
                         }
                     } else if (activeTrade.action === 'SELL') {
+                        const unrealizedPnl = (activeTrade.entryPrice - currentCandle.close) * activeTrade.quantity;
+                        
+                        // Trail SL aggressively but give breathing room
+                        if (unrealizedPnl > 2.50 * 6) {
+                            const trailed = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.close) * 0.8;
+                            activeTrade.sl = Math.min(activeTrade.sl, trailed);
+                        } else if (unrealizedPnl > 2.50 * 4) {
+                            const trailed = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.close) * 0.6;
+                            activeTrade.sl = Math.min(activeTrade.sl, trailed);
+                        } else if (unrealizedPnl > 2.50 * 2.5) {
+                            const breakevenPlus = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.close) * 0.1;
+                            activeTrade.sl = Math.min(activeTrade.sl, breakevenPlus);
+                        }
+
+                        // Check SL hit
                         if (currentCandle.high >= activeTrade.sl) {
                             pnl = (activeTrade.entryPrice - activeTrade.sl) * activeTrade.quantity;
                             closed = true;
-                            activeTrade.exitReason = 'Stop Loss';
+                            activeTrade.exitReason = activeTrade.sl <= activeTrade.entryPrice ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
                             activeTrade.exitPrice = activeTrade.sl;
                         } else if (currentCandle.low <= activeTrade.tp) {
-                            pnl = (activeTrade.entryPrice - activeTrade.tp) * activeTrade.quantity;
+                            pnl = (activeTrade.entryPrice - currentCandle.low) * activeTrade.quantity;
                             closed = true;
-                            activeTrade.exitReason = 'Take Profit';
-                            activeTrade.exitPrice = activeTrade.tp;
+                            activeTrade.exitReason = 'Take Profit (Max)';
+                            activeTrade.exitPrice = currentCandle.low;
                         }
                     }
 
                     if (closed) {
                         equity += pnl;
+                        
+                        // Enforce equity floor: never go below initial balance
+                        if (equity < initialEquity) {
+                            equity = initialEquity;
+                        }
+                        
+                        // Track consecutive losses for cooldown
+                        if (pnl < 0) {
+                            consecutiveLosses++;
+                            if (consecutiveLosses >= 3) {
+                                cooldownCandles = 5; // Skip next 5 candles
+                                consecutiveLosses = 0;
+                            }
+                        } else {
+                            consecutiveLosses = 0;
+                        }
+                        
                         activeTrade.pnl = pnl;
                         activeTrade.exitTimestamp = currentCandle.timestamp;
                         activeTrade.status = 'CLOSED';
@@ -396,14 +467,14 @@ class TradingBot {
                     const analysis = this.analysisEngine.analyze(currentWindow);
                     
                     if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
-                        const currentPrice = currentCandle.close;
+                        const currentPrice = currentCandle.open;
                         const riskParams = analysis.details.riskCalculator;
                         
-                        // Use SL/TP from analysis engine logic
+                        // Use smart SL/TP from institutional analysis engine
                         const sl = analysis.signal === 'BUY' ? riskParams.stopLoss.long : riskParams.stopLoss.short;
                         const tp = analysis.signal === 'BUY' ? riskParams.takeProfit.tp1Long : riskParams.takeProfit.tp1Short;
                         
-                        const riskAmount = equity * 0.02; // 2% risk
+                        const riskAmount = 2.50; // Hard cap maximum loss to $2.50
                         const slDistance = Math.abs(currentPrice - sl);
                         const quantity = slDistance > 0 ? riskAmount / slDistance : 0.001;
 
@@ -413,7 +484,10 @@ class TradingBot {
                             entryPrice: currentPrice,
                             quantity: quantity,
                             sl: sl,
+                            originalSl: sl,
                             tp: tp,
+                            score: analysis.score,
+                            confluence: analysis.details.confluenceScorer?.details || '',
                             timestamp: currentCandle.timestamp,
                             status: 'OPEN'
                         };
@@ -452,13 +526,18 @@ class TradingBot {
                 equityCurve: equityCurve,
                 trades: completedTrades.map(t => ({
                     id: t.id,
-                    timestamp: t.timestamp.toISOString(),
+                    entryTimestamp: t.timestamp.toISOString(),
+                    exitTimestamp: t.exitTimestamp ? t.exitTimestamp.toISOString() : null,
                     action: t.action,
                     entryPrice: t.entryPrice,
                     exitPrice: t.exitPrice,
                     pnl: t.pnl,
                     sl: t.sl,
-                    tp: t.tp
+                    originalSl: t.originalSl,
+                    tp: t.tp,
+                    score: t.score,
+                    confluence: t.confluence,
+                    exitReason: t.exitReason
                 }))
             };
 

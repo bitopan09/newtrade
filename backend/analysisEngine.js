@@ -1,13 +1,12 @@
 class AnalysisEngine {
     constructor() {
-        // In a real implementation, these would be loaded from config or calculated dynamically
         this.indicators = {
             trendFilter: { enabled: true, timeframe: '4H', emaPeriod: 50 },
             srDetector: { enabled: true, lookbackPeriods: 100 },
             obFvGScanner: { enabled: true, minObSize: 0.01 },
             chochBosDetector: { enabled: true, timeframe: '5M' },
-            confluenceScorer: { enabled: true, threshold: 4 },
-            riskCalculator: { enabled: true, riskPerTrade: 0.05 } // 5% risk per trade
+            confluenceScorer: { enabled: true, threshold: 7 }, // 7/10 for strict A+ quality
+            riskCalculator: { enabled: true, riskPerTrade: 0.05 }
         };
     }
 
@@ -27,17 +26,40 @@ class AnalysisEngine {
             obFvGScanner: this._analyzeObFvGScanner(priceData),
             chochBosDetector: this._analyzeChochBosDetector(priceData),
             confluenceScorer: this._calculateConfluenceScore(priceData),
-            riskCalculator: this._calculateRiskParameters(priceData)
+            riskCalculator: this._calculateRiskParameters(priceData),
+            cpr: this._calculateCPR(priceData),
+            vwap: this._calculateVWAP(priceData),
+            liquiditySweep: this._detectLiquiditySweep(priceData),
+            ote: this._checkOTEZone(priceData)
         };
 
         // Determine overall signal based on confluence score
         const { score, details } = analysis.confluenceScorer;
         let signal = 'NEUTRAL';
 
-        if (score >= 4) {
-            // REVERSED LOGIC (Contra-Strategy): 
-            // If price action is up, we SELL. If price action is down, we BUY.
-            signal = priceData[priceData.length - 1].price > priceData[priceData.length - 20].price ? 'SELL' : 'BUY';
+        if (score >= 7) {
+            // INSTITUTIONAL LOGIC: EMA-9/21 crossover + EMA-50 trend + CPR PP + VWAP
+            const prices = priceData.map(p => p.price);
+            const ema9 = this._calculateEma(prices, 9);
+            const ema21 = this._calculateEma(prices, 21);
+            const ema50 = this._calculateEma(prices, 50);
+            const ema9Val = ema9[ema9.length - 1];
+            const ema21Val = ema21[ema21.length - 1];
+            const ema50Val = ema50[ema50.length - 1];
+            const currentPrice = priceData[priceData.length - 1].price;
+            const cpr = analysis.cpr;
+
+            // BUY: EMA-9 > EMA-21 (short-term momentum) + price > EMA-50 (trend) + price > PP (institutional level)
+            const bullish = ema9Val > ema21Val && currentPrice > ema50Val && currentPrice > cpr.pp;
+            // SELL: EMA-9 < EMA-21 + price < EMA-50 + price < PP
+            const bearish = ema9Val < ema21Val && currentPrice < ema50Val && currentPrice < cpr.pp;
+
+            if (bullish) {
+                signal = 'BUY';
+            } else if (bearish) {
+                signal = 'SELL';
+            }
+            // If they disagree → NEUTRAL (skip — no edge)
         }
 
         return {
@@ -50,79 +72,54 @@ class AnalysisEngine {
         };
     }
 
-    /**
-     * Trend filter using 4H EMA-50 bias
-     * @param {Array} priceData - Historical price data
-     * @returns {Object} Trend filter analysis
-     */
+    // ========== ORIGINAL INDICATORS (PRESERVED) ==========
+
     _analyzeTrendFilter(priceData) {
-        // Simplified EMA calculation
         const ema50 = this._calculateEma(priceData.map(p => p.price), 50);
         const currentPrice = priceData[priceData.length - 1].price;
         const emaValue = ema50[ema50.length - 1];
-
         const isBullish = currentPrice > emaValue;
         const strength = Math.abs((currentPrice - emaValue) / emaValue) * 100;
 
         return {
             enabled: this.indicators.trendFilter.enabled,
             signal: isBullish ? 'BULLISH' : 'BEARISH',
-            strength: Math.min(strength, 10), // Cap at 10 for scoring
+            strength: Math.min(strength, 10),
             value: emaValue,
             price: currentPrice
         };
     }
 
-    /**
-     * Support/Resistance detector using daily highs/lows and weekly open
-     * @param {Array} priceData - Historical price data
-     * @returns {Object} S/R detector analysis
-     */
     _analyzeSrDetector(priceData) {
-        // Simplified S/R detection
-        const recentData = priceData.slice(-50); // Last 50 periods
+        const recentData = priceData.slice(-50);
         const highs = recentData.map(p => p.high || p.price);
         const lows = recentData.map(p => p.low || p.price);
-
         const resistance = Math.max(...highs);
         const support = Math.min(...lows);
         const currentPrice = priceData[priceData.length - 1].price;
-
-        // Calculate distance to nearest S/R level
         const distToResistance = ((resistance - currentPrice) / currentPrice) * 100;
         const distToSupport = ((currentPrice - support) / currentPrice) * 100;
 
         let signal = 'NEUTRAL';
         let strength = 0;
 
-        if (distToResistance < 1 && distToResistance > 0) { // Near resistance
+        if (distToResistance < 1 && distToResistance > 0) {
             signal = 'BEARISH';
-            strength = (1 - distToResistance) * 10; // Stronger when closer
-        } else if (distToSupport < 1 && distToSupport > 0) { // Near support
+            strength = (1 - distToResistance) * 10;
+        } else if (distToSupport < 1 && distToSupport > 0) {
             signal = 'BULLISH';
-            strength = (1 - distToSupport) * 10; // Stronger when closer
+            strength = (1 - distToSupport) * 10;
         }
 
         return {
             enabled: this.indicators.srDetector.enabled,
-            signal,
-            strength: Math.min(strength, 10),
-            resistance,
-            support,
-            currentPrice
+            signal, strength: Math.min(strength, 10),
+            resistance, support, currentPrice
         };
     }
 
-    /**
-     * Order Blocks and Fair Value Gaps scanner
-     * @param {Array} priceData - Historical price data
-     * @returns {Object} OB/FVG scanner analysis
-     */
     _analyzeObFvGScanner(priceData) {
-        // Simplified OB/FVG detection
-        const recentData = priceData.slice(-20); // Last 20 periods
-
-        // Look for significant price imbalances (simplified FVG)
+        const recentData = priceData.slice(-20);
         let fvgCount = 0;
         let obCount = 0;
 
@@ -130,28 +127,17 @@ class AnalysisEngine {
             const prev = recentData[i - 2];
             const curr = recentData[i - 1];
             const next = recentData[i];
-
-            // Simplified FVG: gap between prev high and next low (or vice versa)
             const prevHigh = prev.high || prev.price;
             const nextLow = next.low || next.price;
             const prevLow = prev.low || prev.price;
             const nextHigh = next.high || next.price;
 
-            // Bullish FVG: prev high < next low
-            if (prevHigh < nextLow) {
-                fvgCount++;
-            }
-            // Bearish FVG: prev low > next high
-            if (prevLow > nextHigh) {
-                fvgCount++;
-            }
+            if (prevHigh < nextLow) fvgCount++;
+            if (prevLow > nextHigh) fvgCount++;
 
-            // Simplified OB: strong candle with large body
             const bodySize = Math.abs((curr.open || curr.price) - (curr.close || curr.price));
             const candleSize = (curr.high || curr.price) - (curr.low || curr.price);
-            if (bodySize / candleSize > 0.6) { // Strong body
-                obCount++;
-            }
+            if (candleSize > 0 && bodySize / candleSize > 0.6) obCount++;
         }
 
         const signal = fvgCount > 2 ? (obCount > 1 ? 'BULLISH' : 'BEARISH') : 'NEUTRAL';
@@ -159,27 +145,14 @@ class AnalysisEngine {
 
         return {
             enabled: this.indicators.obFvGScanner.enabled,
-            signal,
-            strength,
-            fvgCount,
-            obCount
+            signal, strength, fvgCount, obCount
         };
     }
 
-    /**
-     * Change of Character / Break of Structure detector (5M structure break)
-     * @param {Array} priceData - Historical price data
-     * @returns {Object} CHoCH/BOS detector analysis
-     */
     _analyzeChochBosDetector(priceData) {
-        // Simplified CHoCH/BOS detection
-        const recentData = priceData.slice(-10); // Last 10 periods
-
-        // Look for breaks of recent swing highs/lows
-        let bosCount = 0; // Break of Structure
-        let chochCount = 0; // Change of Character
-
-        // Find recent swing points
+        const recentData = priceData.slice(-10);
+        let bosCount = 0;
+        let chochCount = 0;
         const swingHighs = [];
         const swingLows = [];
 
@@ -187,7 +160,6 @@ class AnalysisEngine {
             const curr = recentData[i];
             const prev = recentData[i - 1];
             const next = recentData[i + 1];
-
             const currHigh = curr.high || curr.price;
             const currLow = curr.low || curr.price;
             const prevHigh = prev.high || prev.price;
@@ -195,47 +167,25 @@ class AnalysisEngine {
             const nextHigh = next.high || next.price;
             const nextLow = next.low || next.price;
 
-            // Swing high: higher than neighbors
-            if (currHigh > prevHigh && currHigh > nextHigh) {
-                swingHighs.push({ price: currHigh, index: i });
-            }
-            // Swing low: lower than neighbors
-            if (currLow < prevLow && currLow < nextLow) {
-                swingLows.push({ price: currLow, index: i });
-            }
+            if (currHigh > prevHigh && currHigh > nextHigh) swingHighs.push({ price: currHigh, index: i });
+            if (currLow < prevLow && currLow < nextLow) swingLows.push({ price: currLow, index: i });
         }
 
         const currentPrice = priceData[priceData.length - 1].price;
-
-        // Check for BOS (break above recent swing high or below recent swing low)
         const recentSwingHigh = swingHighs.length > 0 ? Math.max(...swingHighs.map(s => s.price)) : 0;
         const recentSwingLow = swingLows.length > 0 ? Math.min(...swingLows.map(s => s.price)) : Infinity;
 
-        if (recentSwingHigh > 0 && currentPrice > recentSwingHigh) {
-            bosCount++; // Bullish BOS
-        }
-        if (recentSwingLow < Infinity && currentPrice < recentSwingLow) {
-            bosCount++; // Bearish BOS
-        }
+        if (recentSwingHigh > 0 && currentPrice > recentSwingHigh) bosCount++;
+        if (recentSwingLow < Infinity && currentPrice < recentSwingLow) bosCount++;
 
-        // Simplified CHoCH: change in swing character
-        // In reality, this would be more complex
-        if (swingHighs.length >= 2 && swingLows >= 2) {
-            const lastSwingHigh = swingHighs[swingHighs.length - 1];
-            const prevSwingHigh = swingHighs[swingHighs.length - 2];
-            const lastSwingLow = swingLows[swingLows.length - 1];
-            const prevSwingLow = swingLows[swingLows.length - 2];
+        if (swingHighs.length >= 2 && swingLows.length >= 2) {
+            const lastSH = swingHighs[swingHighs.length - 1];
+            const prevSH = swingHighs[swingHighs.length - 2];
+            const lastSL = swingLows[swingLows.length - 1];
+            const prevSL = swingLows[swingLows.length - 2];
 
-            // Higher high and higher low = bullish CHoCH
-            if (lastSwingHigh.price > prevSwingHigh.price &&
-                lastSwingLow.price > prevSwingLow.price) {
-                chochCount++;
-            }
-            // Lower high and lower low = bearish CHoCH
-            if (lastSwingHigh.price < prevSwingHigh.price &&
-                lastSwingLow.price < prevSwingLow.price) {
-                chochCount++;
-            }
+            if (lastSH.price > prevSH.price && lastSL.price > prevSL.price) chochCount++;
+            if (lastSH.price < prevSH.price && lastSL.price < prevSL.price) chochCount++;
         }
 
         const signal = bosCount > 0 ? (chochCount > 0 ? 'BULLISH' : 'BEARISH') : 'NEUTRAL';
@@ -243,100 +193,317 @@ class AnalysisEngine {
 
         return {
             enabled: this.indicators.chochBosDetector.enabled,
-            signal,
-            strength,
-            bosCount,
-            chochCount
+            signal, strength, bosCount, chochCount
+        };
+    }
+
+    // ========== NEW INSTITUTIONAL INDICATORS ==========
+
+    /**
+     * CPR Calculation (Central Pivot Range) using previous candle's HLC
+     */
+    _calculateCPR(priceData) {
+        const prevDay = priceData[priceData.length - 2];
+        const high = prevDay.high || prevDay.price;
+        const low = prevDay.low || prevDay.price;
+        const close = prevDay.close || prevDay.price;
+
+        const pp = (high + low + close) / 3;    // Daily Pivot Point
+        const bc = (high + low) / 2;            // Bottom Central
+        const tc = (2 * pp) - bc;               // Top Central
+
+        // Standard pivot support/resistance levels
+        const r1 = (2 * pp) - low;
+        const s1 = (2 * pp) - high;
+        const r2 = pp + (high - low);
+        const s2 = pp - (high - low);
+
+        const currentPrice = priceData[priceData.length - 1].price;
+        const distToPP = (currentPrice - pp) / pp;
+        const cprWidth = Math.abs(tc - bc) / pp; // Narrow CPR = trending day
+
+        let signal = 'NEUTRAL';
+        if (currentPrice > pp && currentPrice > tc) signal = 'BULLISH';
+        else if (currentPrice < pp && currentPrice < bc) signal = 'BEARISH';
+
+        return {
+            enabled: true, signal, pp, bc, tc, r1, s1, r2, s2,
+            distToPP, cprWidth,
+            strength: Math.min(Math.abs(1 / (distToPP || 0.01)), 10)
         };
     }
 
     /**
-     * Calculate confluence score from all indicators
-     * @param {Array} priceData - Historical price data
-     * @returns {Object} Confluence score analysis
+     * VWAP — Volume Weighted Average Price (institutional benchmark)
      */
+    _calculateVWAP(priceData) {
+        const lookback = Math.min(priceData.length, 20);
+        const recent = priceData.slice(-lookback);
+
+        let cumTypicalPriceVol = 0;
+        let cumVolume = 0;
+        const vwapValues = [];
+
+        for (let i = 0; i < recent.length; i++) {
+            const tp = ((recent[i].high || recent[i].price) + (recent[i].low || recent[i].price) + (recent[i].close || recent[i].price)) / 3;
+            const vol = recent[i].volume || 1;
+            cumTypicalPriceVol += tp * vol;
+            cumVolume += vol;
+            vwapValues.push(cumTypicalPriceVol / cumVolume);
+        }
+
+        const vwap = vwapValues[vwapValues.length - 1];
+        const currentPrice = priceData[priceData.length - 1].price;
+
+        // Calculate standard deviation bands
+        let sumSqDiff = 0;
+        for (let i = 0; i < recent.length; i++) {
+            const tp = ((recent[i].high || recent[i].price) + (recent[i].low || recent[i].price) + (recent[i].close || recent[i].price)) / 3;
+            sumSqDiff += Math.pow(tp - vwap, 2);
+        }
+        const stdDev = Math.sqrt(sumSqDiff / recent.length);
+
+        const signal = currentPrice > vwap ? 'BULLISH' : 'BEARISH';
+
+        return {
+            enabled: true, signal, value: vwap,
+            upperBand1: vwap + stdDev,
+            lowerBand1: vwap - stdDev,
+            upperBand2: vwap + (2 * stdDev),
+            lowerBand2: vwap - (2 * stdDev),
+            stdDev,
+            strength: Math.min(Math.abs((currentPrice - vwap) / stdDev) * 3, 10)
+        };
+    }
+
+    /**
+     * Liquidity Sweep + Wyckoff Spring/Upthrust detection
+     */
+    _detectLiquiditySweep(priceData) {
+        const recent = priceData.slice(-10);
+        const currentCandle = priceData[priceData.length - 1];
+        const currentPrice = currentCandle.price;
+        const currentClose = currentCandle.close || currentPrice;
+        let sweepType = 'NONE';
+        let sweepLevel = null;
+        let isWyckoffConfirmed = false;
+
+        for (let i = 0; i < recent.length - 1; i++) {
+            const prevHigh = recent[i].high || recent[i].price;
+            const prevLow = recent[i].low || recent[i].price;
+            const currentHigh = currentCandle.high || currentPrice;
+            const currentLow = currentCandle.low || currentPrice;
+
+            // Swept above previous high (took sell-side liquidity)
+            if (currentHigh > prevHigh * 1.001 && currentClose < prevHigh) {
+                sweepType = 'LIQUIDITY_ABOVE';
+                sweepLevel = prevHigh;
+                isWyckoffConfirmed = true; // Upthrust: swept and closed back inside
+            } else if (currentHigh > prevHigh * 1.001) {
+                sweepType = 'LIQUIDITY_ABOVE';
+                sweepLevel = prevHigh;
+            }
+
+            // Swept below previous low (took buy-side liquidity)
+            if (currentLow < prevLow * 0.999 && currentClose > prevLow) {
+                sweepType = 'LIQUIDITY_BELOW';
+                sweepLevel = prevLow;
+                isWyckoffConfirmed = true; // Spring: swept and closed back inside
+            } else if (currentLow < prevLow * 0.999) {
+                sweepType = 'LIQUIDITY_BELOW';
+                sweepLevel = prevLow;
+            }
+        }
+
+        let signal = 'NEUTRAL';
+        if (sweepType === 'LIQUIDITY_BELOW') signal = 'BULLISH'; // Spring → BUY
+        if (sweepType === 'LIQUIDITY_ABOVE') signal = 'BEARISH'; // Upthrust → SELL
+
+        return {
+            enabled: true, signal, sweepType, sweepLevel,
+            isWyckoffConfirmed,
+            strength: isWyckoffConfirmed ? 9 : (sweepType !== 'NONE' ? 6 : 0)
+        };
+    }
+
+    /**
+     * OTE Zone — Optimal Trade Entry (Fibonacci 62-79% retracement)
+     */
+    _checkOTEZone(priceData) {
+        const recent = priceData.slice(-20);
+        const highs = recent.map(p => p.high || p.price);
+        const lows = recent.map(p => p.low || p.price);
+        const swingHigh = Math.max(...highs);
+        const swingLow = Math.min(...lows);
+        const range = swingHigh - swingLow;
+        const currentPrice = priceData[priceData.length - 1].price;
+
+        // For bullish OTE: price retraced 62-79% from swing high to swing low
+        const fib62 = swingHigh - (range * 0.618);
+        const fib79 = swingHigh - (range * 0.786);
+        const inBullishOTE = currentPrice >= fib79 && currentPrice <= fib62;
+
+        // For bearish OTE: price retraced 62-79% from swing low to swing high
+        const bearFib62 = swingLow + (range * 0.618);
+        const bearFib79 = swingLow + (range * 0.786);
+        const inBearishOTE = currentPrice >= bearFib62 && currentPrice <= bearFib79;
+
+        let signal = 'NEUTRAL';
+        if (inBullishOTE) signal = 'BULLISH';
+        if (inBearishOTE) signal = 'BEARISH';
+
+        return {
+            enabled: true, signal, inBullishOTE, inBearishOTE,
+            fib62, fib79, bearFib62, bearFib79,
+            swingHigh, swingLow,
+            strength: (inBullishOTE || inBearishOTE) ? 8 : 0
+        };
+    }
+
+    /**
+     * ICT Killzone check — is the candle timestamp in an active institutional window?
+     */
+    _checkKillzone(timestamp) {
+        if (!timestamp) return { inKillzone: true, zone: 'unknown' };
+        const date = new Date(timestamp);
+        const hour = date.getUTCHours();
+
+        if (hour >= 7 && hour <= 10) return { inKillzone: true, zone: 'London Open' };
+        if (hour >= 12 && hour <= 15) return { inKillzone: true, zone: 'NY Open' };
+        if (hour >= 15 && hour <= 17) return { inKillzone: true, zone: 'London Close' };
+        // For 6h candles, be more lenient — most candles span killzones
+        if (hour >= 0 && hour <= 6) return { inKillzone: false, zone: 'Asian' };
+        return { inKillzone: true, zone: 'Active Session' };
+    }
+
+    // ========== UPGRADED 10-FACTOR CONFLUENCE SCORING ==========
+
     _calculateConfluenceScore(priceData) {
         const trend = this._analyzeTrendFilter(priceData);
         const sr = this._analyzeSrDetector(priceData);
         const obFvG = this._analyzeObFvGScanner(priceData);
         const chochBos = this._analyzeChochBosDetector(priceData);
+        const cpr = this._calculateCPR(priceData);
+        const vwap = this._calculateVWAP(priceData);
+        const liquidity = this._detectLiquiditySweep(priceData);
+        const ote = this._checkOTEZone(priceData);
 
         let score = 0;
         const details = [];
 
-        // Trend filter: 1 point if aligned with price action
+        // Factor 1: EMA-50 Trend Filter
         if ((trend.signal === 'BULLISH' && priceData[priceData.length - 1].price > priceData[priceData.length - 2].price) ||
             (trend.signal === 'BEARISH' && priceData[priceData.length - 1].price < priceData[priceData.length - 2].price)) {
             score += 1;
-            details.push('Trend filter aligned');
+            details.push('Trend aligned');
         }
 
-        // S/R detector: 1 point if near significant level
-        if (sr.signal !== 'NEUTRAL' && sr.strength > 5) {
+        // Factor 2: S/R Level Proximity
+        if (sr.signal !== 'NEUTRAL' && sr.strength > 3) {
             score += 1;
             details.push('Near S/R level');
         }
 
-        // OB/FVG scanner: 1 point if significant imbalances found
-        if (obFvG.signal !== 'NEUTRAL' && obFvG.strength > 3) {
+        // Factor 3: Order Block / FVG
+        if (obFvG.signal !== 'NEUTRAL' && obFvG.strength > 2) {
             score += 1;
             details.push('OB/FVG detected');
         }
 
-        // CHoCH/BOS detector: 1 point if structure break
-        if (chochBos.signal !== 'NEUTRAL' && chochBos.strength > 3) {
+        // Factor 4: CHoCH / BOS
+        if (chochBos.signal !== 'NEUTRAL') {
             score += 1;
             details.push('Structure break');
         }
 
-        // Volume confirmation (simplified)
+        // Factor 5: Volume Confirmation
         const recentVolume = priceData.slice(-5).reduce((sum, p) => sum + (p.volume || 1), 0) / 5;
         const prevVolume = priceData.slice(-10, -5).reduce((sum, p) => sum + (p.volume || 1), 0) / 5;
-        if (recentVolume > prevVolume * 1.5) {
+        if (recentVolume > prevVolume * 1.1) {
             score += 1;
             details.push('Volume confirmation');
         }
 
-        // Time of day filter (simplified - assuming London/NY overlap is best)
-        const hour = new Date().getUTCHours();
-        if ((hour >= 8 && hour <= 11) || (hour >= 13 && hour <= 16)) { // London/NY overlap
+        // Factor 6: Session / Killzone (use candle timestamp)
+        const lastCandle = priceData[priceData.length - 1];
+        const killzone = this._checkKillzone(lastCandle.timestamp);
+        if (killzone.inKillzone) {
             score += 1;
-            details.push('Optimal trading session');
+            details.push(`Killzone: ${killzone.zone}`);
+        }
+
+        // Factor 7: CPR PP Alignment
+        if (cpr.signal !== 'NEUTRAL' && Math.abs(cpr.distToPP) < 0.03) {
+            score += 1;
+            details.push('CPR PP aligned');
+        }
+
+        // Factor 8: Liquidity Sweep / Wyckoff
+        if (liquidity.signal !== 'NEUTRAL') {
+            score += 1;
+            if (liquidity.isWyckoffConfirmed) details.push('Wyckoff confirmed');
+            else details.push('Liquidity sweep');
+        }
+
+        // Factor 9: VWAP Alignment
+        if (vwap.signal !== 'NEUTRAL' && vwap.strength > 1) {
+            score += 1;
+            details.push('VWAP aligned');
+        }
+
+        // Factor 10: OTE Zone (Fibonacci 62-79%)
+        if (ote.signal !== 'NEUTRAL') {
+            score += 1;
+            details.push('In OTE zone');
         }
 
         return {
             enabled: this.indicators.confluenceScorer.enabled,
-            score: Math.min(score, 6), // Max 6 points
+            score: Math.min(score, 10),
             threshold: this.indicators.confluenceScorer.threshold,
             details: details.join(', ')
         };
     }
 
-    /**
-     * Calculate risk parameters for trade
-     * @param {Array} priceData - Historical price data
-     * @returns {Object} Risk calculation results
-     */
+    // ========== UPGRADED RISK CALCULATOR (Liquidity-Based SL) ==========
+
     _calculateRiskParameters(priceData) {
         const currentPrice = priceData[priceData.length - 1].price;
-        const atr = this._calculateAtr(priceData, 14); // 14-period ATR
+        const atr = this._calculateAtr(priceData, 14);
+        const liquidity = this._detectLiquiditySweep(priceData);
+        const cpr = this._calculateCPR(priceData);
 
-        // Risk per trade (2% of account)
-        const riskPerTrade = this.indicators.riskCalculator.riskPerTrade;
+        // Smart SL: priority-based placement
+        let slDistanceLong, slDistanceShort;
 
-        // Tighter Stop loss distance (0.7x ATR instead of 1.5x)
-        const slDistance = atr * 0.7;
+        if (liquidity.sweepLevel) {
+            // Priority 1: Behind swept liquidity level + buffer
+            const buffer = atr * 0.2;
+            slDistanceLong = Math.abs(currentPrice - liquidity.sweepLevel) + buffer;
+            slDistanceShort = slDistanceLong;
+        } else if (cpr.bc && cpr.tc) {
+            // Priority 2: Behind CPR BC (longs) or TC (shorts)
+            slDistanceLong = Math.max(Math.abs(currentPrice - cpr.bc), atr * 1.5);
+            slDistanceShort = Math.max(Math.abs(cpr.tc - currentPrice), atr * 1.5);
+        } else {
+            // Fallback: 1.5x ATR (wider, survives noise)
+            slDistanceLong = atr * 1.5;
+            slDistanceShort = atr * 1.5;
+        }
 
-        // Take profit levels (Aggressive targets for $10+ profit)
-        const tp1Distance = atr * 2.0; // 1:2 RR
-        const tp2Distance = atr * 6.0; // 1:6 RR
+        // Ensure minimum SL distance to avoid division errors
+        slDistanceLong = Math.max(slDistanceLong, atr * 0.5);
+        slDistanceShort = Math.max(slDistanceShort, atr * 0.5);
+
+        const tp1Distance = atr * 8.0; // Capturing absolute market extremes
+        const tp2Distance = atr * 20.0;
 
         return {
             enabled: this.indicators.riskCalculator.enabled,
-            riskPerTrade,
+            riskPerTrade: this.indicators.riskCalculator.riskPerTrade,
             stopLoss: {
-                long: currentPrice - slDistance,
-                short: currentPrice + slDistance
+                long: currentPrice - slDistanceLong,
+                short: currentPrice + slDistanceShort
             },
             takeProfit: {
                 tp1Long: currentPrice + tp1Distance,
@@ -345,71 +512,62 @@ class AnalysisEngine {
                 tp2Short: currentPrice - tp2Distance
             },
             atr,
+            slDistanceLong,
+            slDistanceShort,
             riskReward: {
-                tp1: 1.0,
-                tp2: 2.0
+                tp1: (tp1Distance / slDistanceLong).toFixed(2),
+                tp2: (tp2Distance / slDistanceLong).toFixed(2)
             }
         };
     }
 
-    /**
-     * Calculate Exponential Moving Average
-     * @param {Array} data - Price data array
-     * @param {number} period - EMA period
-     * @returns {Array} EMA values
-     */
-    _calculateEma(data, period) {
-        if (data.length < period) return [];
+    // ========== UTILITY METHODS (PRESERVED) ==========
 
+    _calculateEma(data, period) {
+        if (data.length < period) return data.length > 0 ? [data[data.length - 1]] : [0];
         const ema = [];
         const multiplier = 2 / (period + 1);
-
-        // Start with SMA for first EMA value
         let sma = data.slice(0, period).reduce((sum, price) => sum + price, 0) / period;
         ema.push(sma);
-
-        // Calculate EMA for remaining values
         for (let i = period; i < data.length; i++) {
             ema.push((data[i] - ema[ema.length - 1]) * multiplier + ema[ema.length - 1]);
         }
-
         return ema;
     }
 
-    /**
-     * Calculate Average True Range
-     * @param {Array} priceData - Historical price data
-     * @param {number} period - ATR period
-     * @returns {number} ATR value
-     */
     _calculateAtr(priceData, period) {
         if (priceData.length < period + 1) return 0;
-
         const trueRanges = [];
-
         for (let i = 1; i < priceData.length; i++) {
             const current = priceData[i];
             const previous = priceData[i - 1];
-
             const high = current.high || current.price;
             const low = current.low || current.price;
             const prevClose = previous.close || previous.price;
-
-            const tr1 = high - low;
-            const tr2 = Math.abs(high - prevClose);
-            const tr3 = Math.abs(low - prevClose);
-
-            trueRanges.push(Math.max(tr1, tr2, tr3));
+            trueRanges.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
         }
-
-        // Calculate ATR using Wilder's smoothing
         let atr = trueRanges.slice(0, period).reduce((sum, tr) => sum + tr, 0) / period;
-
         for (let i = period; i < trueRanges.length; i++) {
             atr = (atr * (period - 1) + trueRanges[i]) / period;
         }
-
         return atr;
+    }
+
+    /**
+     * Calculate RSI (new utility for future use)
+     */
+    _calculateRSI(closes, period = 14) {
+        if (closes.length < period + 1) return 50;
+        let gains = 0, losses = 0;
+        for (let i = closes.length - period; i < closes.length; i++) {
+            const change = closes[i] - closes[i - 1];
+            if (change > 0) gains += change;
+            else losses += Math.abs(change);
+        }
+        const avgGain = gains / period;
+        const avgLoss = losses / period;
+        if (avgLoss === 0) return 100;
+        return 100 - (100 / (1 + avgGain / avgLoss));
     }
 }
 

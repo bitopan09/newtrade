@@ -72,27 +72,21 @@ class ExecutionEngine {
         // Simulate trade execution
         const entryPrice = price || 30000;
         const timestamp = new Date();
+        const tradeQuantity = signal.quantity || quantity;
 
-        // Calculate SL/TP
-        const atr = 100;
-        let sl, tp1, tp2;
-        if (action === 'BUY') {
-            sl = entryPrice - (atr * 0.7);
-            tp1 = entryPrice + (atr * 1.5);
-            tp2 = entryPrice + (atr * 3.0);
-        } else if (action === 'SELL') {
-            sl = entryPrice + (atr * 0.7);
-            tp1 = entryPrice - (atr * 1.5);
-            tp2 = entryPrice - (atr * 3.0);
-        }
+        // Use dynamic SL/TP from the signal
+        const sl = signal.sl || (action === 'BUY' ? entryPrice - 100 : entryPrice + 100);
+        const tp1 = signal.tp1 || (action === 'BUY' ? entryPrice + 300 : entryPrice - 300);
+        const score = signal.score || 0;
+        const notes = signal.notes || '';
 
         return new Promise((resolve) => {
             const self = this;
             // Log to database
             this.db.run(
-                `INSERT INTO trades (userId, action, entry_price, quantity, timestamp, status, sl, tp1, tp2, trade_type) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paper')`,
-                [userId, action, entryPrice, quantity, timestamp.toISOString(), 'OPEN', sl, tp1, tp2],
+                `INSERT INTO trades (userId, action, entry_price, quantity, timestamp, status, sl, tp1, score, notes, trade_type) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paper')`,
+                [userId, action, entryPrice, tradeQuantity, timestamp.toISOString(), 'OPEN', sl, tp1, score, notes],
                 function (err) {
                     if (err) {
                         console.error('Error logging trade to database:', err);
@@ -106,10 +100,10 @@ class ExecutionEngine {
                         userId,
                         action,
                         entry_price: entryPrice,
-                        quantity,
+                        quantity: tradeQuantity,
                         timestamp,
                         status: 'OPEN',
-                        sl, tp1, tp2
+                        sl, tp1, score, notes
                     };
 
                     // Add to active trades
@@ -139,25 +133,51 @@ class ExecutionEngine {
             let exitPrice = null;
             let exitReason = '';
 
-            // Check SL hit
-            if ((trade.action === 'BUY' && currentPrice <= trade.sl) ||
-                (trade.action === 'SELL' && currentPrice >= trade.sl)) {
-                exitPrice = trade.sl;
-                exitReason = 'Stop Loss hit';
-            }
-            // Check TP1 hit
-            else if ((trade.action === 'BUY' && currentPrice >= trade.tp1) ||
-                (trade.action === 'SELL' && currentPrice <= trade.tp1)) {
-                exitPrice = trade.tp1;
-                exitReason = 'Take Profit 1 hit';
-                // Move SL to Breakeven after TP1
-                trade.sl = trade.entry_price;
-            }
-            // Check TP2 hit
-            else if ((trade.action === 'BUY' && currentPrice >= trade.tp2) ||
-                (trade.action === 'SELL' && currentPrice <= trade.tp2)) {
-                exitPrice = trade.tp2;
-                exitReason = 'Take Profit 2 hit';
+            // === TRAILING STOP LOSS LOGIC ===
+            if (trade.action === 'BUY') {
+                const unrealizedPnl = (currentPrice - trade.entry_price) * trade.quantity;
+                
+                // Trail SL aggressively as profit grows
+                if (unrealizedPnl > 2.50 * 6) {
+                    const trailed = trade.entry_price + (currentPrice - trade.entry_price) * 0.8;
+                    trade.sl = Math.max(trade.sl, trailed);
+                } else if (unrealizedPnl > 2.50 * 4) {
+                    const trailed = trade.entry_price + (currentPrice - trade.entry_price) * 0.6;
+                    trade.sl = Math.max(trade.sl, trailed);
+                } else if (unrealizedPnl > 2.50 * 2.5) {
+                    const breakevenPlus = trade.entry_price + (currentPrice - trade.entry_price) * 0.1;
+                    trade.sl = Math.max(trade.sl, breakevenPlus);
+                }
+
+                if (currentPrice <= trade.sl) {
+                    exitPrice = trade.sl;
+                    exitReason = trade.sl >= trade.entry_price ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
+                } else if (currentPrice >= trade.tp1) {
+                    exitPrice = currentPrice; // Take full wick
+                    exitReason = 'Take Profit (Max)';
+                }
+            } else if (trade.action === 'SELL') {
+                const unrealizedPnl = (trade.entry_price - currentPrice) * trade.quantity;
+                
+                // Trail SL aggressively
+                if (unrealizedPnl > 2.50 * 6) {
+                    const trailed = trade.entry_price - (trade.entry_price - currentPrice) * 0.8;
+                    trade.sl = Math.min(trade.sl, trailed);
+                } else if (unrealizedPnl > 2.50 * 4) {
+                    const trailed = trade.entry_price - (trade.entry_price - currentPrice) * 0.6;
+                    trade.sl = Math.min(trade.sl, trailed);
+                } else if (unrealizedPnl > 2.50 * 2.5) {
+                    const breakevenPlus = trade.entry_price - (trade.entry_price - currentPrice) * 0.1;
+                    trade.sl = Math.min(trade.sl, breakevenPlus);
+                }
+
+                if (currentPrice >= trade.sl) {
+                    exitPrice = trade.sl;
+                    exitReason = trade.sl <= trade.entry_price ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
+                } else if (currentPrice <= trade.tp1) {
+                    exitPrice = currentPrice;
+                    exitReason = 'Take Profit (Max)';
+                }
             }
 
             if (exitPrice !== null) {
