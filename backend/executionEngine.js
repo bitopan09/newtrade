@@ -63,10 +63,10 @@ class ExecutionEngine {
             return { success: false, reason: 'Signal was to skip trade' };
         }
 
-        // Check user's active trades
+        // Check user's active trades (Institutional engine only allows 1 active trade at a time)
         const userTrades = Array.from(this.activeTrades.values()).filter(t => t.userId === userId);
-        if (userTrades.length >= 5) {
-            return { success: false, reason: 'Maximum active trades reached for this user' };
+        if (userTrades.length >= 1) {
+            return { success: false, reason: 'Maximum active trades reached (1 trade allowed)' };
         }
 
         // Simulate trade execution
