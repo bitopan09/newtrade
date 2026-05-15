@@ -165,12 +165,16 @@ class EmailService {
                             <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">$${trade.sl?.toFixed(2) || 'N/A'}</td>
                         </tr>
                         <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Take Profit 1</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">$${trade.tp1?.toFixed(2) || 'N/A'}</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Take Profit</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">$${trade.tp1?.toFixed(2) || trade.tp?.toFixed(2) || 'N/A'}</td>
                         </tr>
                         <tr>
-                            <td style="padding: 10px; font-weight: bold; color: #2d3748;">Take Profit 2</td>
-                            <td style="padding: 10px; color: #2d3748;">$${trade.tp2?.toFixed(2) || 'N/A'}</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Confluence Score</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">${trade.score ? trade.score + '/10' : 'N/A'}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; font-weight: bold; color: #2d3748;">Reasoning</td>
+                            <td style="padding: 10px; color: #2d3748; font-size: 13px;">${trade.notes || trade.confluence || 'Institutional setup'}</td>
                         </tr>
                     </table>
                     <p style="margin: 0; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; padding-top: 10px;">

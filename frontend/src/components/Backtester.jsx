@@ -73,14 +73,14 @@ const Backtester = () => {
         // Build individual trades section
         if (results.trades && results.trades.length > 0) {
             csv += '\nIndividual Trades\n';
-            csv += 'ID,Timestamp,Exit Timestamp,Action,Entry Price,Exit Price,PnL,Score,Confluence,Reason\n';
+            csv += 'ID,Timestamp,Exit Timestamp,Action,Entry Price,Exit Price,SL,TP,PnL,Score,Confluence,Reason\n';
             results.trades.forEach(trade => {
                 const entryTime = trade.entryTimestamp || trade.timestamp;
                 const exitTime = trade.exitTimestamp || '';
                 const score = trade.score || '';
                 const confluence = trade.confluence ? `"${trade.confluence}"` : '';
                 const reason = trade.exitReason || '';
-                csv += `${trade.id},${entryTime},${exitTime},${trade.action},${trade.entryPrice.toFixed(2)},${trade.exitPrice?.toFixed(2) || ''},${trade.pnl?.toFixed(2) || ''},${score},${confluence},${reason}\n`;
+                csv += `${trade.id},${entryTime},${exitTime},${trade.action},${trade.entryPrice.toFixed(2)},${trade.exitPrice?.toFixed(2) || ''},${trade.sl?.toFixed(2) || ''},${trade.tp?.toFixed(2) || trade.tp1?.toFixed(2) || ''},${trade.pnl?.toFixed(2) || ''},${score},${confluence},${reason}\n`;
             });
         }
 
