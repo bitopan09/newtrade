@@ -157,10 +157,10 @@ app.get('/api/balance', (req, res) => {
 });
 
 app.get('/api/trades', (req, res) => {
-    // Get trade history for user
+    // Get trade history for user and automated bot
     const limit = req.query.limit || 50;
     const userId = req.query.userId || 'default';
-    db.all(`SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC LIMIT ?`, [userId, limit], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE userId = ? OR userId = 'default' ORDER BY timestamp DESC LIMIT ?`, [userId, limit], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -170,9 +170,9 @@ app.get('/api/trades', (req, res) => {
 });
 
 app.get('/api/trades/active', (req, res) => {
-    // Get active trades for user
+    // Get active trades for user and automated bot
     const userId = req.query.userId || 'default';
-    db.all(`SELECT * FROM trades WHERE userId = ? AND status = 'OPEN' ORDER BY timestamp DESC`, [userId], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE (userId = ? OR userId = 'default') AND status = 'OPEN' ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -312,7 +312,7 @@ app.post('/api/trades/:id/close', async (req, res) => {
 // CSV Export endpoint
 app.get('/api/trades/export', (req, res) => {
     const userId = req.query.userId || 'default';
-    db.all('SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC', [userId], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE userId = ? OR userId = 'default' ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             return res.status(500).send('Error fetching trades');
         }
