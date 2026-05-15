@@ -542,10 +542,12 @@ class TradingBot {
                     action: t.action,
                     entryPrice: t.entryPrice,
                     exitPrice: t.exitPrice,
+                    quantity: t.quantity,
                     pnl: t.pnl,
                     sl: t.sl,
                     originalSl: t.originalSl,
-                    tp: t.tp,
+                    tp1: t.tp1,
+                    tp2: t.tp2,
                     score: t.score,
                     confluence: t.confluence,
                     exitReason: t.exitReason
