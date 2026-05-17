@@ -13,7 +13,10 @@ class TradingBot {
         
         // Link Execution Engine exits to Decision Engine tracking
         this.executionEngine.onTradeClosed = (trade) => {
-            this.decisionEngine.recordTradeOutcome(trade);
+            // Only count automated bot trades towards the daily limit, ignore manual user trades
+            if (trade.userId === 'default') {
+                this.decisionEngine.recordTradeOutcome(trade);
+            }
         };
 
         this.isRunning = false;
