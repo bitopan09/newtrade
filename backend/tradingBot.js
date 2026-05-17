@@ -9,7 +9,12 @@ class TradingBot {
         this.db = db;
         this.analysisEngine = new AnalysisEngine();
         this.decisionEngine = new DecisionEngine();
-        this.executionEngine = new ExecutionEngine(db);
+        this.executionEngine = new ExecutionEngine(this.db);
+        
+        // Link Execution Engine exits to Decision Engine tracking
+        this.executionEngine.onTradeClosed = (trade) => {
+            this.decisionEngine.recordTradeOutcome(trade);
+        };
 
         this.isRunning = false;
         this.analysisInterval = null;

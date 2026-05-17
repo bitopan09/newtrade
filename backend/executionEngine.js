@@ -250,6 +250,10 @@ class ExecutionEngine {
         // Log trade closure
         console.log(`Trade closed: ${trade.action} ${trade.quantity} BTC at $${exitPrice.toFixed(2)}. PnL: $${pnl.toFixed(2)}. Reason: ${reason}`);
 
+        if (this.onTradeClosed) {
+            this.onTradeClosed(trade);
+        }
+
         // Send alert
         this._sendAlert(`Trade closed: ${trade.action} ${trade.quantity} BTC at $${exitPrice.toFixed(2)}. PnL: $${pnl.toFixed(2)}. Reason: ${reason}`);
 
