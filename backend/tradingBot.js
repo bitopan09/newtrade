@@ -125,6 +125,10 @@ class TradingBot {
 
             console.log(`[${this.lastAnalysisTime}] Decision: ${decision.action} - ${decision.reason}`);
 
+            // Save current live score for frontend dashboard
+            this.lastScore = decision.details ? decision.details.score : 0;
+            this.lastSignal = decision.action;
+
             // If decision is to trade, execute it
             if (decision.action === 'BUY' || decision.action === 'SELL') {
                 const currentPrice = this.priceData[this.priceData.length - 1].price;
@@ -215,8 +219,10 @@ class TradingBot {
         return {
             isRunning: this.isRunning,
             priceDataPoints: this.priceData.length,
-            activeTrades: this.executionEngine.getActiveTrades().length,
+            activeTrades: this.executionEngine.activeTrades.size,
             lastAnalysisTime: this.lastAnalysisTime,
+            currentScore: this.lastScore || 0,
+            currentSignal: this.lastSignal || 'NEUTRAL',
             dailyTradeTaken: this.decisionEngine.dailyTradeTaken,
             dailyLossCount: this.decisionEngine.dailyLossCount,
             circuitBreakerActive: this.decisionEngine.circuitBreakerActive

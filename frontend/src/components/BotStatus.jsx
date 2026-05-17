@@ -6,8 +6,21 @@ import { API_BASE_URL } from '../services/api';
 const BotStatus = () => {
     const [status, setStatus] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [emailTesting, setEmailTesting] = useState(false);
+    const [emailMessage, setEmailMessage] = useState(null);
 
-
+    const testEmail = async () => {
+        setEmailTesting(true);
+        setEmailMessage(null);
+        try {
+            const res = await axios.post(`${API_BASE_URL}/email/test`);
+            setEmailMessage({ type: 'success', text: 'Test email triggered successfully! Check your inbox.' });
+        } catch (error) {
+            setEmailMessage({ type: 'error', text: 'Failed to trigger test email.' });
+        }
+        setEmailTesting(false);
+        setTimeout(() => setEmailMessage(null), 5000);
+    };
     useEffect(() => {
         const fetchStatus = async () => {
             try {
@@ -35,9 +48,28 @@ const BotStatus = () => {
                 <div className="status-card">
                     <p><strong>Bot Status:</strong> <span className={bot.isRunning ? 'status-online' : 'status-offline'}>{bot.isRunning ? '🟢 ONLINE' : '🔴 OFFLINE'}</span></p>
                     <p><strong>Daily Trade Taken:</strong> {bot.dailyTradeTaken ? '✅ Yes' : '❌ No'}</p>
+                    <p><strong>Live Confluence:</strong> {bot.currentScore}/10 
+                        <span style={{ fontSize: '0.8rem', marginLeft: '8px', color: bot.currentSignal === 'NEUTRAL' ? '#94a3b8' : (bot.currentSignal === 'BUY' ? '#4ade80' : '#f87171') }}>
+                            ({bot.currentSignal})
+                        </span>
+                    </p>
+                    
                     {bot.lastAnalysisTime && (
                         <p style={{ fontSize: '0.8rem', marginTop: '8px', color: '#cbd5e0' }}>
                             Last Analysis: {formatTimeIST(bot.lastAnalysisTime, 'date-time')} IST
+                        </p>
+                    )}
+                    
+                    <button 
+                        onClick={testEmail} 
+                        disabled={emailTesting}
+                        style={{ marginTop: '12px', padding: '6px 12px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}
+                    >
+                        {emailTesting ? 'Sending...' : 'Test Email Alert'}
+                    </button>
+                    {emailMessage && (
+                        <p style={{ fontSize: '0.8rem', marginTop: '6px', color: emailMessage.type === 'success' ? '#4ade80' : '#f87171' }}>
+                            {emailMessage.text}
                         </p>
                     )}
                 </div>
