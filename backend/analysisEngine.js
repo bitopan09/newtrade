@@ -372,7 +372,7 @@ class AnalysisEngine {
         if (hour >= 12 && hour <= 15) return { inKillzone: true, zone: 'NY Open' };
         if (hour >= 15 && hour <= 17) return { inKillzone: true, zone: 'London Close' };
         // For 6h candles, be more lenient — most candles span killzones
-        if (hour >= 0 && hour <= 6) return { inKillzone: false, zone: 'Asian' };
+        if (hour >= 0 && hour <= 6) return { inKillzone: true, zone: 'Asian' };
         return { inKillzone: true, zone: 'Active Session' };
     }
 
