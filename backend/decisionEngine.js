@@ -52,12 +52,12 @@ class DecisionEngine {
             };
         }
 
-        // Check session time gate (6:00 AM to 4:40 PM UTC for Asian and active sessions)
+        // Check session time gate (6:00 AM to 4:00 PM UTC for Asian and active sessions)
         const now = new Date();
         const hour = now.getUTCHours();
         const minute = now.getUTCMinutes();
         const timeInMinutes = hour * 60 + minute;
-        const isSessionOpen = (timeInMinutes >= 6 * 60 && timeInMinutes <= 16 * 60 + 40); // 6:00 AM - 4:40 PM UTC
+        const isSessionOpen = (timeInMinutes >= 6 * 60 && timeInMinutes <= 16 * 60); // 6:00 AM - 4:00 PM UTC
 
         if (!isSessionOpen) {
             return {
