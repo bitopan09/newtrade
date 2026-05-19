@@ -338,18 +338,6 @@ class UnifiedStrategy {
 
     // ==================== UNIFIED RISK MANAGEMENT ====================
 
-    calculatePositionSize(accountBalance, slDistance, maxRiskPercentage = 0.10) {
-        if (!accountBalance || accountBalance <= 0) return this.DEFAULT_QUANTITY;
-        const maxRiskAmount = accountBalance * maxRiskPercentage;
-        // risk amount = quantity * slDistance
-        let quantity = maxRiskAmount / slDistance;
-        // Round to 3 decimal places (standard for BTC)
-        quantity = Math.floor(quantity * 1000) / 1000;
-        // Ensure it meets minimum exchange lot size
-        if (quantity < 0.001) quantity = 0.001;
-        return quantity;
-    }
-
     calculateRiskParameters(priceData, indicators) {
         const currentPrice = priceData[priceData.length - 1].price;
         const atr = this.calculateAtr(priceData, 14);

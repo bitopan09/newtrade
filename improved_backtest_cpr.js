@@ -108,8 +108,7 @@ async function runBacktest() {
 
             if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
                 const rp = analysis.details.riskCalculator;
-                // Calculate position size dynamically to limit risk to 10% of current equity
-                const quantity = strategy.calculatePositionSize(equity, rp.slDistance, 0.10);
+                const quantity = 0.01;
                 activeTrade = {
                     id: trades.length + 1,
                     action: analysis.signal,
