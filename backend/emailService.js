@@ -1,5 +1,11 @@
 const nodemailer = require('nodemailer');
 const dotenv = require('dotenv');
+const dns = require('dns');
+
+// Force DNS to prefer IPv4 globally to resolve ENETUNREACH issues on cloud providers (like Railway)
+if (dns.setDefaultResultOrder) {
+    dns.setDefaultResultOrder('ipv4first');
+}
 
 dotenv.config();
 
