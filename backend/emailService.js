@@ -17,8 +17,19 @@ class EmailService {
                 return;
             }
 
-            this.transporter = nodemailer.createTransport({
-                service: process.env.EMAIL_SERVICE || 'gmail',
+            const isGmail = (process.env.EMAIL_SERVICE || 'gmail').toLowerCase() === 'gmail';
+
+            this.transporter = nodemailer.createTransport(isGmail ? {
+                host: 'smtp.gmail.com',
+                port: 465,
+                secure: true,
+                family: 4, // Force IPv4 to resolve Railway's ENETUNREACH IPv6 issue
+                auth: {
+                    user: process.env.EMAIL_USER,
+                    pass: process.env.EMAIL_PASSWORD
+                }
+            } : {
+                service: process.env.EMAIL_SERVICE,
                 auth: {
                     user: process.env.EMAIL_USER,
                     pass: process.env.EMAIL_PASSWORD
