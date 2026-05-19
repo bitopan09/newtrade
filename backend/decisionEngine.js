@@ -86,14 +86,14 @@ class DecisionEngine {
         // Perform market analysis
         const analysis = this.analysisEngine.analyze(priceData);
 
-        // Check if score meets minimum threshold (4/6 = A+ trade)
-        if (analysis.score < 4) {
+        // Check if score meets minimum threshold (7/10 = A+ trade, matches UnifiedStrategy)
+        if (analysis.score < 7) {
             return {
                 action: 'SKIP',
-                reason: `Confluence score too low: ${analysis.score}/6`,
+                reason: `Confluence score too low: ${analysis.score}/10`,
                 details: {
                     score: analysis.score,
-                    threshold: 4,
+                    threshold: 7,
                     analysis: analysis.details
                 }
             };
