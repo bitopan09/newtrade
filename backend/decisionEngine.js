@@ -28,6 +28,9 @@ class DecisionEngine {
             this._saveState();
         }
 
+        // Always perform technical analysis first so the live dashboard has real-time score & indicators
+        const analysis = this.analysisEngine.analyze(priceData);
+
         // Check circuit breaker (3-loss rule)
         if (this.dailyLossCount >= 3) {
             this.circuitBreakerActive = true;
@@ -35,6 +38,8 @@ class DecisionEngine {
                 action: 'SKIP',
                 reason: '3-loss circuit breaker activated',
                 details: {
+                    score: analysis.score,
+                    analysis: analysis.details,
                     dailyLossCount: this.dailyLossCount,
                     circuitBreakerActive: true
                 }
@@ -47,6 +52,8 @@ class DecisionEngine {
                 action: 'SKIP',
                 reason: 'Daily trade limit reached (1 trade per session)',
                 details: {
+                    score: analysis.score,
+                    analysis: analysis.details,
                     dailyTradeTaken: this.dailyTradeTaken
                 }
             };
@@ -64,6 +71,8 @@ class DecisionEngine {
                 action: 'SKIP',
                 reason: 'Outside trading session hours',
                 details: {
+                    score: analysis.score,
+                    analysis: analysis.details,
                     currentHourUTC: hour,
                     sessionOpen: isSessionOpen
                 }
@@ -78,13 +87,12 @@ class DecisionEngine {
                 action: 'SKIP',
                 reason: 'News filter blocked trade',
                 details: {
+                    score: analysis.score,
+                    analysis: analysis.details,
                     newsFilterPassed: false
                 }
             };
         }
-
-        // Perform market analysis
-        const analysis = this.analysisEngine.analyze(priceData);
 
         // Check if score meets minimum threshold (7/10 = A+ trade, matches UnifiedStrategy)
         if (analysis.score < 7) {
