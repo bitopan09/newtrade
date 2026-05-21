@@ -157,6 +157,7 @@ class TradingBot {
 
                 if (result.success) {
                     console.log(`Trade executed: ${result.message}`);
+                    this.decisionEngine.dailyTradeTaken = true; // Lock daily session on trade entry
                     // Send email notification for auto-trade
                     if (process.env.SEND_EMAIL_ON_TRADE === 'true') {
                         emailService.sendTradeNotification(result.trade, `AUTO ${result.trade.action}`);

@@ -116,21 +116,26 @@ class DecisionEngine {
      * @param {Object} tradeResult - Result of the trade
      */
     recordTradeOutcome(tradeResult) {
-        const { pnl } = tradeResult;
+        const entryDate = new Date(tradeResult.timestamp).toDateString();
+        const today = new Date().toDateString();
 
-        if (pnl < 0) {
-            this.dailyLossCount++;
+        // Only count towards today's stats if the trade was opened today
+        if (entryDate === today) {
+            const { pnl } = tradeResult;
+
+            if (pnl < 0) {
+                this.dailyLossCount++;
+            }
+
+            this.dailyTradeTaken = true;
+            this._saveState();
+
+            // Check if we hit the circuit breaker after this trade
+            if (this.dailyLossCount >= 3) {
+                this.circuitBreakerActive = true;
+            }
         } else {
-            // Reset loss count on winning trade (optional, depends on strategy)
-            // this.dailyLossCount = 0;
-        }
-
-        this.dailyTradeTaken = true;
-        this._saveState();
-
-        // Check if we hit the circuit breaker after this trade
-        if (this.dailyLossCount >= 3) {
-            this.circuitBreakerActive = true;
+            console.log(`[DecisionEngine] Trade ID ${tradeResult.id} entered on ${entryDate} (not today: ${today}). Skipping daily session lock update.`);
         }
     }
 
