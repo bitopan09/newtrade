@@ -401,7 +401,7 @@ class TradingBot {
                         if (equity < initialEquity) equity = initialEquity;
                         if (exitResult.pnl < 0) {
                             consecutiveLosses++;
-                            if (consecutiveLosses >= 3) { cooldownCandles = 5; consecutiveLosses = 0; }
+                            if (consecutiveLosses >= 2) { cooldownCandles = 3; consecutiveLosses = 0; }
                         } else { consecutiveLosses = 0; }
                         
                         activeTrade.pnl = exitResult.pnl;
@@ -414,28 +414,35 @@ class TradingBot {
                     }
                 }
 
-                // New entry using UnifiedStrategy
+                // New entry using UnifiedStrategy with session hour gate (8:00 AM - 4:00 PM UTC)
                 if (!activeTrade) {
-                    const analysis = uStrategy.analyze(currentWindow);
-                    
-                    if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
-                        const rp = analysis.details.riskCalculator;
-                        const quantity = parseFloat(process.env.BTC_QUANTITY || '0.01');
-                        activeTrade = {
-                            id: trades.length + 1,
-                            action: analysis.signal,
-                            entryPrice: currentCandle.open,
-                            quantity,
-                            sl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
-                            originalSl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
-                            tp1: analysis.signal === 'BUY' ? rp.takeProfit.tp1Long : rp.takeProfit.tp1Short,
-                            tp2: analysis.signal === 'BUY' ? rp.takeProfit.tp2Long : rp.takeProfit.tp2Short,
-                            atr: rp.atr,
-                            score: analysis.score,
-                            confluence: analysis.details.confluenceScorer?.details || '',
-                            timestamp: currentCandle.timestamp,
-                            status: 'OPEN'
-                        };
+                    const hour = currentCandle.timestamp.getUTCHours();
+                    const minute = currentCandle.timestamp.getUTCMinutes();
+                    const timeInMinutes = hour * 60 + minute;
+                    const isSessionOpen = (timeInMinutes >= 8 * 60 && timeInMinutes <= 16 * 60);
+
+                    if (isSessionOpen) {
+                        const analysis = uStrategy.analyze(currentWindow);
+                        
+                        if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
+                            const rp = analysis.details.riskCalculator;
+                            const quantity = parseFloat(process.env.BTC_QUANTITY || '0.01');
+                            activeTrade = {
+                                id: trades.length + 1,
+                                action: analysis.signal,
+                                entryPrice: currentCandle.open,
+                                quantity,
+                                sl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
+                                originalSl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
+                                tp1: analysis.signal === 'BUY' ? rp.takeProfit.tp1Long : rp.takeProfit.tp1Short,
+                                tp2: analysis.signal === 'BUY' ? rp.takeProfit.tp2Long : rp.takeProfit.tp2Short,
+                                atr: rp.atr,
+                                score: analysis.score,
+                                confluence: analysis.details.confluenceScorer?.details || '',
+                                timestamp: currentCandle.timestamp,
+                                status: 'OPEN'
+                            };
+                        }
                     }
                 }
             }

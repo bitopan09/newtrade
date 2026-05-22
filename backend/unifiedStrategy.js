@@ -9,7 +9,7 @@ class UnifiedStrategy {
         this.CONFLUENCE_THRESHOLD = 7; // Minimum score to take a trade
         this.MAX_SCORE = 10;
         this.DEFAULT_QUANTITY = 0.01;
-        this.TP1_RR = 3;   // 1:3 Risk-Reward for TP1
+        this.TP1_RR = 4;   // 1:4 Risk-Reward for TP1
         this.TP2_RR = 6;   // 1:6 Risk-Reward for TP2
     }
 

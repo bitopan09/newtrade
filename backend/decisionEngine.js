@@ -31,12 +31,12 @@ class DecisionEngine {
         // Always perform technical analysis first so the live dashboard has real-time score & indicators
         const analysis = this.analysisEngine.analyze(priceData);
 
-        // Check circuit breaker (3-loss rule)
-        if (this.dailyLossCount >= 3) {
+        // Check circuit breaker (2-loss rule)
+        if (this.dailyLossCount >= 2) {
             this.circuitBreakerActive = true;
             return {
                 action: 'SKIP',
-                reason: '3-loss circuit breaker activated',
+                reason: '2-loss circuit breaker activated',
                 details: {
                     score: analysis.score,
                     analysis: analysis.details,
@@ -59,12 +59,12 @@ class DecisionEngine {
             };
         }
 
-        // Check session time gate (6:00 AM to 4:00 PM UTC for Asian and active sessions)
+        // Check session time gate (8:00 AM to 4:00 PM UTC for Asian and active sessions)
         const now = new Date();
         const hour = now.getUTCHours();
         const minute = now.getUTCMinutes();
         const timeInMinutes = hour * 60 + minute;
-        const isSessionOpen = (timeInMinutes >= 6 * 60 && timeInMinutes <= 16 * 60); // 6:00 AM - 4:00 PM UTC
+        const isSessionOpen = (timeInMinutes >= 8 * 60 && timeInMinutes <= 16 * 60); // 8:00 AM - 4:00 PM UTC
 
         if (!isSessionOpen) {
             return {
@@ -139,7 +139,7 @@ class DecisionEngine {
             this._saveState();
 
             // Check if we hit the circuit breaker after this trade
-            if (this.dailyLossCount >= 3) {
+            if (this.dailyLossCount >= 2) {
                 this.circuitBreakerActive = true;
             }
         } else {

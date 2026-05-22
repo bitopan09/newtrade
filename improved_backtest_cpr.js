@@ -89,7 +89,7 @@ async function runBacktest() {
 
                 if (exitResult.pnl < 0) {
                     consecutiveLosses++;
-                    if (consecutiveLosses >= 3) { cooldownCandles = 5; consecutiveLosses = 0; }
+                    if (consecutiveLosses >= 2) { cooldownCandles = 3; consecutiveLosses = 0; }
                 } else { consecutiveLosses = 0; }
 
                 activeTrade.pnl = exitResult.pnl;
@@ -102,28 +102,35 @@ async function runBacktest() {
             }
         }
 
-        // New entry — identical to tradingBot.js runBacktest
+        // New entry with 8:00 AM - 4:00 PM UTC Session Hour Gate
         if (!activeTrade) {
-            const analysis = strategy.analyze(currentWindow);
+            const hour = currentCandle.timestamp.getUTCHours();
+            const minute = currentCandle.timestamp.getUTCMinutes();
+            const timeInMinutes = hour * 60 + minute;
+            const isSessionOpen = (timeInMinutes >= 8 * 60 && timeInMinutes <= 16 * 60);
 
-            if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
-                const rp = analysis.details.riskCalculator;
-                const quantity = 0.01;
-                activeTrade = {
-                    id: trades.length + 1,
-                    action: analysis.signal,
-                    entryPrice: currentCandle.open,
-                    quantity,
-                    sl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
-                    originalSl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
-                    tp1: analysis.signal === 'BUY' ? rp.takeProfit.tp1Long : rp.takeProfit.tp1Short,
-                    tp2: analysis.signal === 'BUY' ? rp.takeProfit.tp2Long : rp.takeProfit.tp2Short,
-                    atr: rp.atr,
-                    score: analysis.score,
-                    confluence: analysis.details.confluenceScorer?.details || '',
-                    timestamp: currentCandle.timestamp,
-                    status: 'OPEN'
-                };
+            if (isSessionOpen) {
+                const analysis = strategy.analyze(currentWindow);
+
+                if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
+                    const rp = analysis.details.riskCalculator;
+                    const quantity = 0.01;
+                    activeTrade = {
+                        id: trades.length + 1,
+                        action: analysis.signal,
+                        entryPrice: currentCandle.open,
+                        quantity,
+                        sl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
+                        originalSl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
+                        tp1: analysis.signal === 'BUY' ? rp.takeProfit.tp1Long : rp.takeProfit.tp1Short,
+                        tp2: analysis.signal === 'BUY' ? rp.takeProfit.tp2Long : rp.takeProfit.tp2Short,
+                        atr: rp.atr,
+                        score: analysis.score,
+                        confluence: analysis.details.confluenceScorer?.details || '',
+                        timestamp: currentCandle.timestamp,
+                        status: 'OPEN'
+                    };
+                }
             }
         }
     }
@@ -194,9 +201,10 @@ async function runBacktest() {
     console.log('✓ Smart SL (Liquidity > CPR > ATR fallback)');
     console.log(`✓ TP: 1:${strategy.TP1_RR} RR (TP1) / 1:${strategy.TP2_RR} RR (TP2)`);
     console.log('✓ Progressive Trailing Stop Loss');
-    console.log('✓ 3-Loss Cooldown (5-candle pause)');
+    console.log('✓ 2-Loss Cooldown (3-candle pause)');
     console.log('✓ Equity Floor Protection');
-    console.log('='.repeat(55));
+    console.log('✓ Session Time Gate (8:00 AM - 4:00 PM UTC)');
+    console.log('=======================================================');
 }
 
 runBacktest().catch(console.error);
