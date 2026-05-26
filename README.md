@@ -222,11 +222,11 @@ npm run dev:frontend
 
 ## 📈 Trading Logic
 
-- **Strategy**: Confluence Scoring
-- **Timeframe**: 1-hour candles
-- **Frequency**: 1 trade per day maximum
-- **Risk Management**: Stop Loss & Take Profit levels
-- **Hours**: 24/7 operation (all IST times)
+- **Strategy**: Advanced 10-Factor Confluence Scoring (EMA, RSI, MACD, CPR, VWAP, Wyckoff, etc.)
+- **Timeframe**: 6-hour candles
+- **Position Sizing**: Dynamic Tiered Risk Management (Risk 10% of base equity, starting at a $50 baseline, scaling up automatically when equity doubles).
+- **Risk Management**: Smart Stop Loss (Liquidity/CPR/ATR) & Progressive Trailing Stop (Break-even at 2.5R).
+- **Hours**: Active Session Time Gate from 8:00 AM to 4:00 PM UTC (1:30 PM to 9:30 PM IST).
 
 ## ⚠️ Disclaimer
 
