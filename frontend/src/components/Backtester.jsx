@@ -40,7 +40,7 @@ const Backtester = () => {
                 totalReturn: 0.35, // 35% return
                 equityCurve: Array.from({ length: 30 }, (_, i) => ({
                     day: i + 1,
-                    equity: 100 + (i * 0.8) + (Math.sin(i * 0.3) * 5)
+                    equity: 50 + (i * 0.8) + (Math.sin(i * 0.3) * 5)
                 }))
             };
 
@@ -147,7 +147,7 @@ const Backtester = () => {
 
                     <div className="equity-curve-placeholder">
                         <h4>Equity Curve</h4>
-                        <p>Total Equity: ${(100 + results.totalReturn * 100).toFixed(2)} (Initial: $100.00)</p>
+                        <p>Total Equity: ${(50 + results.totalReturn * 50).toFixed(2)} (Initial: $50.00)</p>
                     </div>
 
                     <div className="backtest-trades-list">

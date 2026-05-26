@@ -59,8 +59,8 @@ async function runBacktest() {
     console.log(`TP1 RR: 1:${strategy.TP1_RR} | TP2 RR: 1:${strategy.TP2_RR}`);
     console.log('================================\n');
 
-    let equity = 100.0;
-    const initialEquity = 100.0;
+    let equity = 50.0;
+    const initialEquity = 50.0;
     const equityCurve = [];
     const trades = [];
     let activeTrade = null;
@@ -84,6 +84,10 @@ async function runBacktest() {
         if (activeTrade) {
             const exitResult = strategy.checkTradeExit(activeTrade, currentCandle);
             if (exitResult.closed) {
+                // Apply 0.1% exchange fee on entry and exit
+                // const fee = (activeTrade.entryPrice * activeTrade.quantity * 0.001) + (exitResult.exitPrice * activeTrade.quantity * 0.001);
+                // exitResult.pnl -= fee;
+                
                 equity += exitResult.pnl;
                 if (equity < initialEquity) equity = initialEquity;
 
@@ -114,7 +118,18 @@ async function runBacktest() {
 
                 if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
                     const rp = analysis.details.riskCalculator;
-                    const quantity = 0.01;
+                    
+                    let baseBalance = 50;
+                    if (equity >= 100) {
+                        while (baseBalance * 2 <= equity) {
+                            baseBalance *= 2;
+                        }
+                    }
+                    
+                    const riskAmount = baseBalance * 0.10;
+                    const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
+                    const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
+                    const quantity = parseFloat((riskAmount / slDistance).toFixed(5));
                     activeTrade = {
                         id: trades.length + 1,
                         action: analysis.signal,

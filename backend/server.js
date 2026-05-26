@@ -75,7 +75,7 @@ db.serialize(() => {
     // Initialize balance for default user if needed
     db.get(`SELECT COUNT(*) as count FROM balance WHERE userId = 'default'`, [], (err, row) => {
         if (!err && row.count === 0) {
-            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES ('default', 100, 0)`);
+            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES ('default', 50, 0)`);
         }
     });
 
@@ -147,8 +147,8 @@ app.get('/api/balance', (req, res) => {
         }
         // Create default balance for new users
         if (!row) {
-            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, 100, 0)`, [userId], function() {
-                res.json({ userId, usd_balance: 100, btc_balance: 0, id: this.lastID });
+            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, 50, 0)`, [userId], function() {
+                res.json({ userId, usd_balance: 50, btc_balance: 0, id: this.lastID });
             });
         } else {
             res.json(row || {});

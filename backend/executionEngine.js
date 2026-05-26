@@ -234,8 +234,8 @@ class ExecutionEngine {
                             this.db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, ?)`, 
                                 [userId, newBalance, balance.btc_balance]);
                         } else if (!err && !balance) {
-                            // Create initial balance if missing (100 starting)
-                            const initialBalance = 100 + pnl;
+                            // Create initial balance if missing (50 starting)
+                            const initialBalance = 50 + pnl;
                             this.db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, ?)`, 
                                 [userId, initialBalance, 0]);
                         }

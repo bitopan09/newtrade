@@ -139,7 +139,24 @@ class TradingBot {
                 const sl = decision.action === 'BUY' ? riskParams.stopLoss.long : riskParams.stopLoss.short;
                 const tp1 = decision.action === 'BUY' ? riskParams.takeProfit.tp1Long : riskParams.takeProfit.tp1Short;
                 const tp2 = decision.action === 'BUY' ? riskParams.takeProfit.tp2Long : riskParams.takeProfit.tp2Short;
-                const quantity = parseFloat(process.env.BTC_QUANTITY || '0.01'); // Fixed lot size for realistic PnL
+                // Get current balance and calculate dynamic quantity based on tiered risk
+                const balanceRow = await new Promise((resolve) => {
+                    this.db.get(`SELECT * FROM balance WHERE userId = 'default' ORDER BY timestamp DESC LIMIT 1`, [], (err, row) => {
+                        resolve(row);
+                    });
+                });
+                
+                const currentBalance = balanceRow ? balanceRow.usd_balance : 50;
+                let baseBalance = 50;
+                if (currentBalance >= 100) {
+                    while (baseBalance * 2 <= currentBalance) {
+                        baseBalance *= 2;
+                    }
+                }
+                
+                const riskAmount = baseBalance * 0.10;
+                const slDistance = Math.max(Math.abs(currentPrice - sl), 0.1); // Prevent division by zero
+                const quantity = parseFloat((riskAmount / slDistance).toFixed(5));
 
                 const signal = {
                     action: decision.action,
@@ -368,8 +385,8 @@ class TradingBot {
 
             // 2. Initialize simulation variables
             const trades = [];
-            let equity = 100;
-            const initialEquity = 100;
+            let equity = 50;
+            const initialEquity = 50;
             const equityCurve = [];
             let activeTrade = null;
             let consecutiveLosses = 0;
@@ -426,7 +443,18 @@ class TradingBot {
                         
                         if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
                             const rp = analysis.details.riskCalculator;
-                            const quantity = parseFloat(process.env.BTC_QUANTITY || '0.01');
+                            
+                            // Dynamic tier-based position sizing
+                            let baseBalance = 50;
+                            if (equity >= 100) {
+                                while (baseBalance * 2 <= equity) {
+                                    baseBalance *= 2;
+                                }
+                            }
+                            const riskAmount = baseBalance * 0.10;
+                            const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
+                            const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
+                            const quantity = parseFloat((riskAmount / slDistance).toFixed(5));
                             activeTrade = {
                                 id: trades.length + 1,
                                 action: analysis.signal,
