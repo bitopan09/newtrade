@@ -9,8 +9,19 @@ class UnifiedStrategy {
         this.CONFLUENCE_THRESHOLD = 7; // Minimum score to take a trade
         this.MAX_SCORE = 10;
         this.DEFAULT_QUANTITY = 0.01;
+        this.LOT_MIN = 0.01;  // Minimum lot size
+        this.LOT_MAX = 0.04;  // Maximum lot size
         this.TP1_RR = 4;   // 1:4 Risk-Reward for TP1
         this.TP2_RR = 6;   // 1:6 Risk-Reward for TP2
+    }
+
+    /**
+     * Clamp a dynamically calculated lot size to the allowed range [0.01, 0.04]
+     * @param {number} rawQuantity - The unclamped calculated quantity
+     * @returns {number} Clamped quantity between LOT_MIN and LOT_MAX
+     */
+    clampLotSize(rawQuantity) {
+        return parseFloat(Math.min(this.LOT_MAX, Math.max(this.LOT_MIN, rawQuantity)).toFixed(5));
     }
 
     // ==================== INDICATOR CALCULATIONS ====================

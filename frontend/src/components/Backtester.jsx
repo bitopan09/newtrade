@@ -8,8 +8,6 @@ const Backtester = () => {
     const runBacktest = async () => {
         setIsRunning(true);
         try {
-            // In a real implementation, this would send a request to the backend
-            // to run a backtest on historical data
             const response = await fetch(`${API_BASE_URL}/backtest`, {
                 method: 'POST',
                 headers: {
@@ -30,14 +28,13 @@ const Backtester = () => {
             setResults(data);
         } catch (error) {
             console.error('Backtest failed:', error);
-            // Fallback to mock data if API is not available
             const mockResults = {
                 totalTrades: 42,
                 winRate: 0.67,
                 profitFactor: 1.8,
                 maxDrawdown: 0.15,
                 sharpeRatio: 1.2,
-                totalReturn: 0.35, // 35% return
+                totalReturn: 0.35,
                 equityCurve: Array.from({ length: 30 }, (_, i) => ({
                     day: i + 1,
                     equity: 50 + (i * 0.8) + (Math.sin(i * 0.3) * 5)
@@ -50,10 +47,19 @@ const Backtester = () => {
         }
     };
 
+    // Compute lot size statistics from trades
+    const getLotStats = () => {
+        if (!results?.trades?.length) return null;
+        const lots = results.trades.map(t => t.quantity || 0.01);
+        const minLot = Math.min(...lots);
+        const maxLot = Math.max(...lots);
+        const avgLot = lots.reduce((s, l) => s + l, 0) / lots.length;
+        return { minLot, maxLot, avgLot };
+    };
+
     const downloadCsv = () => {
         if (!results) return;
 
-        // Build summary section
         let csv = 'Backtest Summary (90 Days)\n';
         csv += `Metric,Value\n`;
         csv += `Total Trades,${results.totalTrades}\n`;
@@ -61,19 +67,18 @@ const Backtester = () => {
         csv += `Profit Factor,${results.profitFactor.toFixed(2)}\n`;
         csv += `Max Drawdown,${(results.maxDrawdown * 100).toFixed(1)}%\n`;
         csv += `Sharpe Ratio,${results.sharpeRatio.toFixed(2)}\n`;
-        csv += `Total Return,${(results.totalReturn * 100).toFixed(1)}%\n\n`;
+        csv += `Total Return,${(results.totalReturn * 100).toFixed(1)}%\n`;
+        csv += `Lot Size Range,0.01 - 0.04\n\n`;
 
-        // Build equity curve section
         csv += 'Equity Curve\n';
         csv += 'Day,Equity\n';
         results.equityCurve.forEach(point => {
             csv += `${point.day},${point.equity.toFixed(2)}\n`;
         });
 
-        // Build individual trades section
         if (results.trades && results.trades.length > 0) {
             csv += '\nIndividual Trades\n';
-            csv += 'ID,Timestamp,Exit Timestamp,Action,Quantity,Entry Price,Exit Price,SL1,SL2 (Final),TP1,TP2,PnL,Score,Confluence,Reason\n';
+            csv += 'ID,Timestamp,Exit Timestamp,Action,Lot Size,Entry Price,Exit Price,SL1,SL2 (Final),TP1,TP2,PnL,Score,Confluence,Reason\n';
             results.trades.forEach(trade => {
                 const entryTime = trade.entryTimestamp || trade.timestamp;
                 const exitTime = trade.exitTimestamp || '';
@@ -95,6 +100,8 @@ const Backtester = () => {
         document.body.removeChild(a);
     };
 
+    const lotStats = getLotStats();
+
     return (
         <div className="backtester-container">
             <div className="backtester-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', marginBottom: '15px' }}>
@@ -105,6 +112,11 @@ const Backtester = () => {
                     </button>
                 )}
             </div>
+
+            <div style={{ marginBottom: '10px', padding: '6px 10px', background: 'rgba(99, 102, 241, 0.1)', borderRadius: '6px', border: '1px solid rgba(99, 102, 241, 0.2)', fontSize: '0.78rem', color: '#a5b4fc' }}>
+                <strong>⚡ Dynamic Lot:</strong> 0.01 – 0.04 BTC (risk-based, clamped)
+            </div>
+
             <div className="backtester-controls">
                 <button
                     onClick={runBacktest}
@@ -145,6 +157,23 @@ const Backtester = () => {
                         </div>
                     </div>
 
+                    {lotStats && (
+                        <div style={{ display: 'flex', gap: '12px', marginTop: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                            <div style={{ flex: 1, minWidth: '80px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', padding: '8px 10px', textAlign: 'center' }}>
+                                <div style={{ fontSize: '0.65rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Min Lot</div>
+                                <div style={{ fontSize: '1rem', fontWeight: 700, color: '#10b981' }}>{lotStats.minLot.toFixed(4)}</div>
+                            </div>
+                            <div style={{ flex: 1, minWidth: '80px', background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.2)', borderRadius: '8px', padding: '8px 10px', textAlign: 'center' }}>
+                                <div style={{ fontSize: '0.65rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Avg Lot</div>
+                                <div style={{ fontSize: '1rem', fontWeight: 700, color: '#818cf8' }}>{lotStats.avgLot.toFixed(4)}</div>
+                            </div>
+                            <div style={{ flex: 1, minWidth: '80px', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)', borderRadius: '8px', padding: '8px 10px', textAlign: 'center' }}>
+                                <div style={{ fontSize: '0.65rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Max Lot</div>
+                                <div style={{ fontSize: '1rem', fontWeight: 700, color: '#f59e0b' }}>{lotStats.maxLot.toFixed(4)}</div>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="equity-curve-placeholder">
                         <h4>Equity Curve</h4>
                         <p>Total Equity: ${(50 + results.totalReturn * 50).toFixed(2)} (Initial: $50.00)</p>
@@ -157,21 +186,25 @@ const Backtester = () => {
                                 <tr>
                                     <th>Date</th>
                                     <th>Action</th>
+                                    <th>Lot</th>
                                     <th>Entry</th>
                                     <th>Exit</th>
                                     <th>PnL</th>
+                                    <th>Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {results.trades.slice(0, 15).map(trade => (
                                     <tr key={trade.id}>
-                                        <td>{new Date(trade.timestamp).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}</td>
+                                        <td>{new Date(trade.entryTimestamp || trade.timestamp).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}</td>
                                         <td className={trade.action.toLowerCase()}>{trade.action}</td>
+                                        <td style={{ color: '#a5b4fc', fontFamily: 'monospace', fontSize: '0.8rem' }}>{(trade.quantity || 0.01).toFixed(4)}</td>
                                         <td>${trade.entryPrice.toFixed(2)}</td>
                                         <td>${trade.exitPrice.toFixed(2)}</td>
                                         <td className={trade.pnl >= 0 ? 'profit' : 'loss'}>
                                             ${trade.pnl.toFixed(2)}
                                         </td>
+                                        <td style={{ fontSize: '0.72rem', color: '#94a3b8' }}>{trade.exitReason || '—'}</td>
                                     </tr>
                                 ))}
                             </tbody>

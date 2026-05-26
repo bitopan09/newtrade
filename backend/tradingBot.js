@@ -156,7 +156,8 @@ class TradingBot {
                 
                 const riskAmount = baseBalance * 0.10;
                 const slDistance = Math.max(Math.abs(currentPrice - sl), 0.1); // Prevent division by zero
-                const quantity = parseFloat((riskAmount / slDistance).toFixed(5));
+                const rawQuantity = riskAmount / slDistance;
+                const quantity = parseFloat(Math.min(0.04, Math.max(0.01, rawQuantity)).toFixed(5)); // Clamp lot to 0.01-0.04
 
                 const signal = {
                     action: decision.action,
@@ -454,7 +455,8 @@ class TradingBot {
                             const riskAmount = baseBalance * 0.10;
                             const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
                             const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
-                            const quantity = parseFloat((riskAmount / slDistance).toFixed(5));
+                            const rawQuantity = riskAmount / slDistance;
+                            const quantity = parseFloat(Math.min(0.04, Math.max(0.01, rawQuantity)).toFixed(5)); // Clamp lot to 0.01-0.04
                             activeTrade = {
                                 id: trades.length + 1,
                                 action: analysis.signal,
