@@ -20,7 +20,7 @@ class UnifiedStrategy {
         this.DEFAULT_QUANTITY = 0.01;
         this.LOT_MIN = 0.001;  // Minimum lot size
         this.LOT_MAX = 0.04;  // Maximum lot size
-        this.PARTIAL_TP_RR = 1.5; // Sweet spot for partial take profit
+        this.PARTIAL_TP_RR = 100.0; // Disabled: Forcing pure Chandelier Trailing Stop for max profits
     }
 
     /**
