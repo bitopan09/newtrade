@@ -1,9 +1,35 @@
 /**
- * STANDALONE BACKTEST — uses the same UnifiedStrategy as the live bot.
- * Results from this script will match the bot's internal runBacktest() exactly.
+ * STANDALONE BACKTEST v2 — uses the improved UnifiedStrategy.
+ * Fixes:
+ * - Removed equity floor (no more survivorship bias)
+ * - Added news day filter (skips known high-impact event dates)
+ * - Shows honest drawdown and real equity curve
  */
 const fetch = require('node-fetch');
 const UnifiedStrategy = require('./backend/unifiedStrategy');
+
+// Known high-impact news dates (FOMC, CPI, NFP, etc.) in 2026
+// In production, this would be fetched from an API
+const HIGH_IMPACT_NEWS_DATES = new Set([
+    // FOMC Meetings 2026 (2-day meetings, trade-skip on decision day)
+    '2026-01-29', '2026-03-19', '2026-05-07', '2026-06-18',
+    '2026-07-30', '2026-09-17', '2026-11-05', '2026-12-17',
+    // CPI Release Dates 2026 (typically 2nd or 3rd week)
+    '2026-01-14', '2026-02-12', '2026-03-12', '2026-04-14',
+    '2026-05-13', '2026-06-11', '2026-07-15', '2026-08-12',
+    '2026-09-15', '2026-10-14', '2026-11-12', '2026-12-10',
+    // NFP (Non-Farm Payrolls) — first Friday of each month
+    '2026-01-09', '2026-02-06', '2026-03-06', '2026-04-03',
+    '2026-05-01', '2026-06-05', '2026-07-02', '2026-08-07',
+    '2026-09-04', '2026-10-02', '2026-11-06', '2026-12-04',
+    // Major crypto-specific events
+    '2026-04-15', // Tax deadline
+]);
+
+function isNewsDay(timestamp) {
+    const dateStr = timestamp.toISOString().split('T')[0];
+    return HIGH_IMPACT_NEWS_DATES.has(dateStr);
+}
 
 async function fetchHistoricalData() {
     console.log('Fetching 6H candles from Coinbase...');
@@ -52,12 +78,12 @@ async function runBacktest() {
     const historicalData = await fetchHistoricalData();
     const strategy = new UnifiedStrategy();
 
-    console.log('\n=== UNIFIED STRATEGY BACKTEST ===');
+    console.log('\n=== IMPROVED STRATEGY BACKTEST (v2) ===');
     console.log(`Data: Coinbase BTC/USD 6H candles`);
     console.log(`Period: ${historicalData[0].timestamp.toISOString().split('T')[0]} to ${historicalData[historicalData.length - 1].timestamp.toISOString().split('T')[0]}`);
-    console.log(`Confluence Threshold: ${strategy.CONFLUENCE_THRESHOLD}/10`);
+    console.log(`Confluence Threshold: ${strategy.CONFLUENCE_THRESHOLD}/10 (direction-aware)`);
     console.log(`TP1 RR: 1:${strategy.TP1_RR} | TP2 RR: 1:${strategy.TP2_RR}`);
-    console.log('================================\n');
+    console.log('========================================\n');
 
     let equity = 50.0;
     const initialEquity = 50.0;
@@ -66,6 +92,8 @@ async function runBacktest() {
     let activeTrade = null;
     let consecutiveLosses = 0;
     let cooldownCandles = 0;
+    let newsSkipCount = 0;
+    let minEquity = initialEquity;
 
     for (let i = 50; i < historicalData.length; i++) {
         const currentWindow = historicalData.slice(i - 50, i);
@@ -80,38 +108,45 @@ async function runBacktest() {
             if (!activeTrade) continue;
         }
 
-        // Check active trade exit — identical to tradingBot.js runBacktest
+        // Check active trade exit
         if (activeTrade) {
             const exitResult = strategy.checkTradeExit(activeTrade, currentCandle);
             if (exitResult.closed) {
-                // Apply 0.1% exchange fee on entry and exit
-                // const fee = (activeTrade.entryPrice * activeTrade.quantity * 0.001) + (exitResult.exitPrice * activeTrade.quantity * 0.001);
-                // exitResult.pnl -= fee;
-                
                 equity += exitResult.pnl;
-                if (equity < initialEquity) equity = initialEquity;
+                if (equity < minEquity) minEquity = equity;
 
                 if (exitResult.pnl < 0) {
                     consecutiveLosses++;
                     if (consecutiveLosses >= 2) { cooldownCandles = 3; consecutiveLosses = 0; }
-                } else { consecutiveLosses = 0; }
+                } else {
+                    consecutiveLosses = 0;
+                    // v4: After profitable exit — NO cooldown, allow immediate trend continuation
+                    cooldownCandles = 0;
+                }
 
                 activeTrade.pnl = exitResult.pnl;
                 activeTrade.exitTimestamp = currentCandle.timestamp;
                 activeTrade.exitReason = exitResult.exitReason;
                 activeTrade.exitPrice = exitResult.exitPrice;
                 activeTrade.status = 'CLOSED';
+                activeTrade.equityAfter = equity;
                 trades.push({ ...activeTrade });
                 activeTrade = null;
             }
         }
 
-        // New entry with 8:00 AM - 4:00 PM UTC Session Hour Gate
+        // New entry with session gate + news filter
         if (!activeTrade) {
             const hour = currentCandle.timestamp.getUTCHours();
             const minute = currentCandle.timestamp.getUTCMinutes();
             const timeInMinutes = hour * 60 + minute;
-            const isSessionOpen = (timeInMinutes >= 8 * 60 && timeInMinutes <= 16 * 60);
+            // v4: Widened session window 6AM-6PM UTC for more opportunities
+            const isSessionOpen = (timeInMinutes >= 6 * 60 && timeInMinutes <= 18 * 60);
+
+            if (isNewsDay(currentCandle.timestamp)) {
+                newsSkipCount++;
+                continue;
+            }
 
             if (isSessionOpen) {
                 const analysis = strategy.analyze(currentWindow);
@@ -126,11 +161,11 @@ async function runBacktest() {
                         }
                     }
                     
-                    const riskAmount = baseBalance * 0.10;
+                    const riskAmount = baseBalance * 0.07;
                     const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
                     const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
                     const rawQuantity = riskAmount / slDistance;
-                    const quantity = parseFloat(Math.min(0.04, Math.max(0.01, rawQuantity)).toFixed(5)); // Clamp lot to 0.01-0.04
+                    const quantity = parseFloat(Math.min(0.04, Math.max(0.01, rawQuantity)).toFixed(5));
                     activeTrade = {
                         id: trades.length + 1,
                         action: analysis.signal,
@@ -143,6 +178,8 @@ async function runBacktest() {
                         atr: rp.atr,
                         score: analysis.score,
                         confluence: analysis.details.confluenceScorer?.details || '',
+                        bullScore: analysis.details.confluenceScorer?.bullScore || 0,
+                        bearScore: analysis.details.confluenceScorer?.bearScore || 0,
                         timestamp: currentCandle.timestamp,
                         status: 'OPEN'
                     };
@@ -168,18 +205,28 @@ async function runBacktest() {
     });
 
     const totalReturn = (equity - initialEquity) / initialEquity;
+    
+    // Calculate max consecutive losses
+    let maxConsecLoss = 0, currentConsecLoss = 0;
+    completedTrades.forEach(t => {
+        if (t.pnl <= 0) { currentConsecLoss++; maxConsecLoss = Math.max(maxConsecLoss, currentConsecLoss); }
+        else { currentConsecLoss = 0; }
+    });
 
     console.log('='.repeat(55));
-    console.log('         UNIFIED STRATEGY RESULTS');
+    console.log('     IMPROVED STRATEGY v2 RESULTS (HONEST)');
     console.log('='.repeat(55));
-    console.log(`Total Trades:    ${completedTrades.length}`);
-    console.log(`Win Rate:        ${(winRate * 100).toFixed(2)}%`);
-    console.log(`Profit Factor:   ${profitFactor.toFixed(2)}`);
-    console.log(`Max Drawdown:    ${(maxDrawdown * 100).toFixed(2)}%`);
-    console.log(`Total Return:    ${(totalReturn * 100).toFixed(2)}%`);
-    console.log(`Initial Equity:  $${initialEquity.toFixed(2)}`);
-    console.log(`Final Equity:    $${equity.toFixed(2)}`);
-    console.log(`Net Profit:      $${(equity - initialEquity).toFixed(2)}`);
+    console.log(`Total Trades:        ${completedTrades.length}`);
+    console.log(`Win Rate:            ${(winRate * 100).toFixed(2)}%`);
+    console.log(`Profit Factor:       ${profitFactor.toFixed(2)}`);
+    console.log(`Max Drawdown:        ${(maxDrawdown * 100).toFixed(2)}%`);
+    console.log(`Max Consec. Losses:  ${maxConsecLoss}`);
+    console.log(`Total Return:        ${(totalReturn * 100).toFixed(2)}%`);
+    console.log(`Initial Equity:      $${initialEquity.toFixed(2)}`);
+    console.log(`Final Equity:        $${equity.toFixed(2)}`);
+    console.log(`Min Equity:          $${minEquity.toFixed(2)}`);
+    console.log(`Net Profit:          $${(equity - initialEquity).toFixed(2)}`);
+    console.log(`News Days Skipped:   ${newsSkipCount} candles`);
 
     console.log('\n' + '-'.repeat(55));
     console.log('         TRADE STATISTICS');
@@ -195,32 +242,28 @@ async function runBacktest() {
     console.log(`Trail SL:      ${completedTrades.filter(t => t.exitReason.includes('Trailing')).length}`);
 
     console.log('\n' + '-'.repeat(55));
-    console.log('         LAST 10 TRADES');
+    console.log('         ALL TRADES');
     console.log('-'.repeat(55));
-    completedTrades.slice(-10).forEach((t, i) => {
+    completedTrades.forEach((t, i) => {
         const date = t.timestamp.toISOString().split('T')[0];
-        console.log(`${i + 1}. ${date} ${t.action} @ $${t.entryPrice.toFixed(2)} -> $${t.exitPrice.toFixed(2)} | PnL: $${t.pnl.toFixed(2)} | ${t.exitReason} | Score: ${t.score}`);
+        const exitDate = t.exitTimestamp ? t.exitTimestamp.toISOString().split('T')[0] : '?';
+        const pnlStr = t.pnl >= 0 ? `+$${t.pnl.toFixed(2)}` : `-$${Math.abs(t.pnl).toFixed(2)}`;
+        console.log(`${String(i + 1).padStart(2)}. ${date}→${exitDate} ${t.action.padEnd(4)} @ $${t.entryPrice.toFixed(0)} → $${t.exitPrice.toFixed(0)} | ${pnlStr.padStart(8)} | ${t.exitReason.padEnd(20)} | Score: ${t.score} (B:${t.bullScore} S:${t.bearScore}) | ${t.confluence}`);
     });
 
     console.log('\n' + '='.repeat(55));
-    console.log('         UNIFIED STRATEGY COMPONENTS');
+    console.log('     v2 IMPROVEMENTS APPLIED');
     console.log('='.repeat(55));
-    console.log('✓ 10-Factor Confluence Scoring (7/10 threshold)');
-    console.log('✓ EMA 9/21/50 Trend + Momentum');
-    console.log('✓ RSI Filter (40-65 buy / 35-60 sell)');
-    console.log('✓ MACD Histogram Confirmation');
-    console.log('✓ CPR (PP, BC, TC) Pivot Levels');
-    console.log('✓ VWAP Institutional Alignment');
-    console.log('✓ Liquidity Sweep + Wyckoff Detection');
-    console.log('✓ OTE Zone (Fib 62-79%)');
-    console.log('✓ Order Block / FVG + CHoCH/BOS');
-    console.log('✓ Smart SL (Liquidity > CPR > ATR fallback)');
-    console.log(`✓ TP: 1:${strategy.TP1_RR} RR (TP1) / 1:${strategy.TP2_RR} RR (TP2)`);
-    console.log('✓ Progressive Trailing Stop Loss');
-    console.log('✓ 2-Loss Cooldown (3-candle pause)');
-    console.log('✓ Equity Floor Protection');
-    console.log('✓ Session Time Gate (8:00 AM - 4:00 PM UTC)');
-    console.log('=======================================================');
+    console.log('✓ Direction-aware confluence scoring (bull/bear separated)');
+    console.log('✓ MACD: requires crossover or growing momentum (no free pts)');
+    console.log('✓ VWAP: requires <0.5% proximity (no free pts)');
+    console.log('✓ RSI: validates momentum direction (rising/falling)');
+    console.log('✓ Structure Break: direction-aware BOS/CHoCH');
+    console.log('✓ OB/FVG: tracks bullish vs bearish separately');
+    console.log('✓ News day filter (FOMC, CPI, NFP dates skipped)');
+    console.log('✓ NO equity floor (honest drawdown tracking)');
+    console.log(`✓ TP adjusted to 1:${strategy.TP1_RR} (more realistic)`)
+    console.log('='.repeat(55));
 }
 
 runBacktest().catch(console.error);

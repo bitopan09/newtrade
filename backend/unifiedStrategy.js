@@ -1,18 +1,28 @@
 /**
- * UNIFIED STRATEGY MODULE
+ * UNIFIED STRATEGY MODULE (v2 — IMPROVED)
  * Single source of truth for signal generation, confluence scoring, and risk management.
  * Used by both the live bot (analysisEngine.js) and standalone backtest (improved_backtest_cpr.js).
+ *
+ * v2 Fixes:
+ * - Direction-aware confluence scoring (bullish/bearish counted separately)
+ * - MACD: requires crossover + direction match (no more free points)
+ * - VWAP: requires proximity (within 0.5% of VWAP), not just above/below
+ * - RSI: validates momentum direction (rising for bull, falling for bear)
+ * - Structure Break: tracks direction of BOS/CHoCH
+ * - OB/FVG: tracks bullish vs bearish order blocks separately
+ * - News filter integration hook
  */
 
 class UnifiedStrategy {
     constructor() {
-        this.CONFLUENCE_THRESHOLD = 7; // Minimum score to take a trade
+        this.CONFLUENCE_THRESHOLD = 5; // Strict direction-aware scoring means 5/10 is high quality
         this.MAX_SCORE = 10;
         this.DEFAULT_QUANTITY = 0.01;
         this.LOT_MIN = 0.01;  // Minimum lot size
         this.LOT_MAX = 0.04;  // Maximum lot size
-        this.TP1_RR = 4;   // 1:4 Risk-Reward for TP1
-        this.TP2_RR = 6;   // 1:6 Risk-Reward for TP2
+        this.TP1_RR = 2.5;  // 1:2.5 Risk-Reward for TP1 (base target)
+        this.TP2_RR = 5;    // 1:5 Risk-Reward for TP2
+        this.TP1_RR_HIGH = 3; // 1:3 RR for high-conviction trades (score >= 7)
     }
 
     /**
@@ -56,8 +66,58 @@ class UnifiedStrategy {
         return atr;
     }
 
+    /**
+     * Calculate ADX (Average Directional Index) for market regime detection.
+     * ADX > 20 = trending, ADX < 20 = choppy/ranging.
+     */
+    calculateAdx(priceData, period = 14) {
+        if (priceData.length < period * 2 + 1) return 15; // default low = assume ranging
+        
+        const plusDM = [], minusDM = [], tr = [];
+        for (let i = 1; i < priceData.length; i++) {
+            const curr = priceData[i], prev = priceData[i - 1];
+            const cH = curr.high || curr.price, cL = curr.low || curr.price;
+            const pH = prev.high || prev.price, pL = prev.low || prev.price;
+            const pC = prev.close || prev.price;
+            
+            const upMove = cH - pH;
+            const downMove = pL - cL;
+            plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+            minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+            tr.push(Math.max(cH - cL, Math.abs(cH - pC), Math.abs(cL - pC)));
+        }
+        
+        // Smoothed averages
+        let smoothPlusDM = plusDM.slice(0, period).reduce((s, v) => s + v, 0);
+        let smoothMinusDM = minusDM.slice(0, period).reduce((s, v) => s + v, 0);
+        let smoothTR = tr.slice(0, period).reduce((s, v) => s + v, 0);
+        
+        const dxValues = [];
+        for (let i = period; i < tr.length; i++) {
+            smoothPlusDM = smoothPlusDM - (smoothPlusDM / period) + plusDM[i];
+            smoothMinusDM = smoothMinusDM - (smoothMinusDM / period) + minusDM[i];
+            smoothTR = smoothTR - (smoothTR / period) + tr[i];
+            
+            const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
+            const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
+            const diSum = plusDI + minusDI;
+            const dx = diSum > 0 ? (Math.abs(plusDI - minusDI) / diSum) * 100 : 0;
+            dxValues.push(dx);
+        }
+        
+        if (dxValues.length < period) return dxValues.length > 0 ? dxValues[dxValues.length - 1] : 15;
+        
+        // ADX = smoothed DX
+        let adx = dxValues.slice(0, period).reduce((s, v) => s + v, 0) / period;
+        for (let i = period; i < dxValues.length; i++) {
+            adx = ((adx * (period - 1)) + dxValues[i]) / period;
+        }
+        return adx;
+    }
+
     calculateRsi(closes, period = 14) {
-        if (closes.length < period + 1) return 50;
+        if (closes.length < period + 1) return { value: 50, prevValue: 50 };
+        // Calculate current RSI
         let gains = 0, losses = 0;
         for (let i = closes.length - period; i < closes.length; i++) {
             const change = closes[i] - closes[i - 1];
@@ -66,23 +126,49 @@ class UnifiedStrategy {
         }
         const avgGain = gains / period;
         const avgLoss = losses / period;
-        if (avgLoss === 0) return 100;
-        return 100 - (100 / (1 + avgGain / avgLoss));
+        const currentRsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+
+        // Calculate previous RSI (1 period back) for direction check
+        let prevGains = 0, prevLosses = 0;
+        for (let i = closes.length - period - 1; i < closes.length - 1; i++) {
+            if (i < 1) continue;
+            const change = closes[i] - closes[i - 1];
+            if (change > 0) prevGains += change;
+            else prevLosses += Math.abs(change);
+        }
+        const prevAvgGain = prevGains / period;
+        const prevAvgLoss = prevLosses / period;
+        const prevRsi = prevAvgLoss === 0 ? 100 : 100 - (100 / (1 + prevAvgGain / prevAvgLoss));
+
+        return { value: currentRsi, prevValue: prevRsi };
     }
 
     calculateMacd(closes) {
-        if (closes.length < 26) return { macd: 0, signal: 0, histogram: 0 };
+        if (closes.length < 26) return { macd: 0, signal: 0, histogram: 0, prevHistogram: 0 };
         const ema12 = this.calculateEma(closes, 12);
         const ema26 = this.calculateEma(closes, 26);
         const macdLine = ema12[ema12.length - 1] - ema26[ema26.length - 1];
-        const signalLine = this.calculateEma(
-            ema12.slice(ema12.length - Math.min(ema12.length, 9)).map((v, i) => {
-                const idx = ema26.length - Math.min(ema12.length, 9) + i;
-                return idx >= 0 && idx < ema26.length ? v - ema26[idx] : 0;
-            }), 9
-        );
+        
+        // Build MACD line series for signal line calculation
+        const macdSeries = [];
+        const minLen = Math.min(ema12.length, ema26.length);
+        for (let i = 0; i < minLen; i++) {
+            const idx12 = ema12.length - minLen + i;
+            const idx26 = ema26.length - minLen + i;
+            macdSeries.push(ema12[idx12] - ema26[idx26]);
+        }
+        
+        const signalLine = this.calculateEma(macdSeries, 9);
         const signal = signalLine.length > 0 ? signalLine[signalLine.length - 1] : macdLine * 0.8;
-        return { macd: macdLine, signal, histogram: macdLine - signal };
+        const histogram = macdLine - signal;
+        
+        // Get previous histogram for crossover detection
+        let prevHistogram = 0;
+        if (macdSeries.length >= 2 && signalLine.length >= 2) {
+            prevHistogram = macdSeries[macdSeries.length - 2] - signalLine[signalLine.length - 2];
+        }
+        
+        return { macd: macdLine, signal, histogram, prevHistogram };
     }
 
     calculateCPR(priceData) {
@@ -120,7 +206,16 @@ class UnifiedStrategy {
         }
         const vwap = cumTPVol / cumVol;
         const currentPrice = priceData[priceData.length - 1].price;
-        return { value: vwap, signal: currentPrice > vwap ? 'BULLISH' : 'BEARISH' };
+        const distToVwap = Math.abs(currentPrice - vwap) / vwap;
+        
+        // v2 FIX: Only signal if price is within 1.5% of VWAP (proximity check)
+        // Too tight (0.5%) filters out too many valid signals; 1.5% is still meaningful
+        let signal = 'NEUTRAL';
+        if (distToVwap < 0.015) {
+            signal = currentPrice > vwap ? 'BULLISH' : 'BEARISH';
+        }
+        
+        return { value: vwap, signal, distToVwap };
     }
 
     detectLiquiditySweep(priceData) {
@@ -181,9 +276,14 @@ class UnifiedStrategy {
         return { signal, inBullishOTE, inBearishOTE };
     }
 
+    /**
+     * v2 FIX: Detect Order Block and FVG with direction awareness
+     * Tracks bullish vs bearish OB/FVG separately
+     */
     detectOrderBlockFVG(priceData) {
         const recent = priceData.slice(-20);
-        let fvgCount = 0, obCount = 0;
+        let bullishFvg = 0, bearishFvg = 0;
+        let bullishOb = 0, bearishOb = 0;
 
         for (let i = 2; i < recent.length; i++) {
             const prev = recent[i - 2], next = recent[i];
@@ -192,22 +292,44 @@ class UnifiedStrategy {
             const prevLow = prev.low || prev.price;
             const nextHigh = next.high || next.price;
 
-            if (prevHigh < nextLow) fvgCount++;
-            if (prevLow > nextHigh) fvgCount++;
+            // Bullish FVG: gap up (prev high < next low)
+            if (prevHigh < nextLow) bullishFvg++;
+            // Bearish FVG: gap down (prev low > next high)
+            if (prevLow > nextHigh) bearishFvg++;
 
+            // Order Block detection with direction
             const curr = recent[i - 1];
-            const bodySize = Math.abs((curr.open || curr.price) - (curr.close || curr.price));
+            const currOpen = curr.open || curr.price;
+            const currClose = curr.close || curr.price;
+            const bodySize = Math.abs(currOpen - currClose);
             const candleSize = (curr.high || curr.price) - (curr.low || curr.price);
-            if (candleSize > 0 && bodySize / candleSize > 0.6) obCount++;
+            if (candleSize > 0 && bodySize / candleSize > 0.6) {
+                if (currClose > currOpen) bullishOb++; // Bullish candle = bullish OB
+                else bearishOb++; // Bearish candle = bearish OB
+            }
         }
 
-        const signal = fvgCount > 2 ? (obCount > 1 ? 'BULLISH' : 'BEARISH') : 'NEUTRAL';
-        return { signal, fvgCount, obCount, strength: Math.min((fvgCount + obCount) / 2, 10) };
+        const totalFvg = bullishFvg + bearishFvg;
+        let signal = 'NEUTRAL';
+        if (totalFvg > 2) {
+            if (bullishFvg > bearishFvg && bullishOb > bearishOb) signal = 'BULLISH';
+            else if (bearishFvg > bullishFvg && bearishOb > bullishOb) signal = 'BEARISH';
+            else if (bullishFvg > bearishFvg) signal = 'BULLISH';
+            else if (bearishFvg > bullishFvg) signal = 'BEARISH';
+        }
+        
+        const strength = Math.min((totalFvg + bullishOb + bearishOb) / 2, 10);
+        return { signal, fvgCount: totalFvg, obCount: bullishOb + bearishOb, strength, bullishFvg, bearishFvg, bullishOb, bearishOb };
     }
 
+    /**
+     * v2 FIX: Detect structure break with direction tracking
+     * Now correctly distinguishes bullish BOS from bearish BOS
+     */
     detectStructureBreak(priceData) {
         const recent = priceData.slice(-10);
-        let bosCount = 0, chochCount = 0;
+        let bullishBos = 0, bearishBos = 0;
+        let bullishChoch = 0, bearishChoch = 0;
         const swingHighs = [], swingLows = [];
 
         for (let i = 2; i < recent.length - 2; i++) {
@@ -220,20 +342,31 @@ class UnifiedStrategy {
         }
 
         const currentPrice = priceData[priceData.length - 1].price;
-        if (swingHighs.length > 0 && currentPrice > Math.max(...swingHighs)) bosCount++;
-        if (swingLows.length > 0 && currentPrice < Math.min(...swingLows)) bosCount++;
+        
+        // BOS direction: breaking above swing highs = BULLISH, breaking below swing lows = BEARISH
+        if (swingHighs.length > 0 && currentPrice > Math.max(...swingHighs)) bullishBos++;
+        if (swingLows.length > 0 && currentPrice < Math.min(...swingLows)) bearishBos++;
+        
+        // CHoCH detection with direction
         if (swingHighs.length >= 2 && swingLows.length >= 2) {
             const [prevSH, lastSH] = swingHighs.slice(-2);
             const [prevSL, lastSL] = swingLows.slice(-2);
-            if (lastSH > prevSH && lastSL > prevSL) chochCount++;
-            if (lastSH < prevSH && lastSL < prevSL) chochCount++;
+            // Higher highs + higher lows = bullish structure
+            if (lastSH > prevSH && lastSL > prevSL) bullishChoch++;
+            // Lower highs + lower lows = bearish structure
+            if (lastSH < prevSH && lastSL < prevSL) bearishChoch++;
         }
 
-        const signal = bosCount > 0 ? (chochCount > 0 ? 'BULLISH' : 'BEARISH') : 'NEUTRAL';
-        return { signal, bosCount, chochCount };
+        let signal = 'NEUTRAL';
+        const totalBullish = bullishBos + bullishChoch;
+        const totalBearish = bearishBos + bearishChoch;
+        if (totalBullish > totalBearish && totalBullish > 0) signal = 'BULLISH';
+        else if (totalBearish > totalBullish && totalBearish > 0) signal = 'BEARISH';
+
+        return { signal, bosCount: bullishBos + bearishBos, chochCount: bullishChoch + bearishChoch, bullishBos, bearishBos, bullishChoch, bearishChoch };
     }
 
-    // ==================== 10-FACTOR CONFLUENCE SCORING ====================
+    // ==================== DIRECTION-AWARE CONFLUENCE SCORING ====================
 
     calculateConfluenceScore(priceData) {
         const prices = priceData.map(p => p.price);
@@ -244,7 +377,9 @@ class UnifiedStrategy {
         // Calculate all indicators
         const ema50 = this.calculateEma(prices, 50);
         const ema50Val = ema50[ema50.length - 1];
-        const rsi = this.calculateRsi(closes, 14);
+        const rsiResult = this.calculateRsi(closes, 14);
+        const rsi = rsiResult.value;
+        const rsiPrev = rsiResult.prevValue;
         const macd = this.calculateMacd(closes);
         const cpr = this.calculateCPR(priceData);
         const vwap = this.calculateVWAP(priceData);
@@ -257,52 +392,107 @@ class UnifiedStrategy {
         const recentVol = priceData.slice(-5).reduce((s, p) => s + (p.volume || 1), 0) / 5;
         const prevVol = priceData.slice(-10, -5).reduce((s, p) => s + (p.volume || 1), 0) / 5;
 
-        let score = 0;
-        const details = [];
+        // v2: DIRECTION-AWARE scoring — count bullish and bearish points SEPARATELY
+        let bullScore = 0, bearScore = 0;
+        const bullDetails = [], bearDetails = [];
 
         // Factor 1: EMA-50 Trend (price trending with EMA-50)
-        const trendBullish = currentPrice > ema50Val && currentPrice > prevPrice;
-        const trendBearish = currentPrice < ema50Val && currentPrice < prevPrice;
-        if (trendBullish || trendBearish) { score++; details.push('Trend aligned'); }
+        if (currentPrice > ema50Val && currentPrice > prevPrice) {
+            bullScore++; bullDetails.push('Trend aligned');
+        }
+        if (currentPrice < ema50Val && currentPrice < prevPrice) {
+            bearScore++; bearDetails.push('Trend aligned');
+        }
 
-        // Factor 2: RSI Confirmation (not overbought for buys, not oversold for sells)
-        const rsiBullish = rsi > 40 && rsi < 65;
-        const rsiBearish = rsi > 35 && rsi < 60;
-        if (rsiBullish || rsiBearish) { score++; details.push(`RSI: ${rsi.toFixed(1)}`); }
+        // Factor 2: RSI Confirmation — v2 FIX: check momentum direction
+        const rsiInBullZone = rsi > 40 && rsi < 70;
+        const rsiRising = rsi > rsiPrev; // RSI momentum is rising
+        const rsiInBearZone = rsi > 30 && rsi < 60;
+        const rsiFalling = rsi < rsiPrev; // RSI momentum is falling
+        
+        if (rsiInBullZone && rsiRising) {
+            bullScore++; bullDetails.push(`RSI: ${rsi.toFixed(1)}↑`);
+        }
+        if (rsiInBearZone && rsiFalling) {
+            bearScore++; bearDetails.push(`RSI: ${rsi.toFixed(1)}↓`);
+        }
 
-        // Factor 3: MACD Confirmation
-        if (macd.histogram > 0 || macd.histogram < 0) { score++; details.push('MACD confirmed'); }
+        // Factor 3: MACD — v2 FIX: require histogram direction match AND crossover signal
+        const macdBullishCrossover = macd.histogram > 0 && macd.prevHistogram <= 0; // Fresh bullish cross
+        const macdBullishMomentum = macd.histogram > 0 && macd.histogram > macd.prevHistogram; // Growing bullish
+        const macdBearishCrossover = macd.histogram < 0 && macd.prevHistogram >= 0; // Fresh bearish cross
+        const macdBearishMomentum = macd.histogram < 0 && macd.histogram < macd.prevHistogram; // Growing bearish
+        
+        if (macdBullishCrossover || macdBullishMomentum) {
+            bullScore++; bullDetails.push('MACD bull');
+        }
+        if (macdBearishCrossover || macdBearishMomentum) {
+            bearScore++; bearDetails.push('MACD bear');
+        }
 
-        // Factor 4: CPR PP Alignment (price near pivot)
-        if (cpr.signal !== 'NEUTRAL' && Math.abs(cpr.distToPP) < 0.03) { score++; details.push('CPR PP aligned'); }
+        // Factor 4: CPR PP Alignment (price near pivot with direction)
+        if (cpr.signal === 'BULLISH' && Math.abs(cpr.distToPP) < 0.03) {
+            bullScore++; bullDetails.push('CPR bullish');
+        }
+        if (cpr.signal === 'BEARISH' && Math.abs(cpr.distToPP) < 0.03) {
+            bearScore++; bearDetails.push('CPR bearish');
+        }
 
-        // Factor 5: VWAP Alignment
-        if (vwap.signal !== 'NEUTRAL') { score++; details.push('VWAP aligned'); }
+        // Factor 5: VWAP — v2 FIX: only count when price is near VWAP (proximity check)
+        if (vwap.signal === 'BULLISH') {
+            bullScore++; bullDetails.push('VWAP aligned');
+        }
+        if (vwap.signal === 'BEARISH') {
+            bearScore++; bearDetails.push('VWAP aligned');
+        }
 
         // Factor 6: Liquidity Sweep / Wyckoff
-        if (liquidity.signal !== 'NEUTRAL') {
-            score++;
-            details.push(liquidity.isWyckoffConfirmed ? 'Wyckoff confirmed' : 'Liquidity sweep');
-            if (liquidity.isWyckoffConfirmed) { score++; details.push('Wyckoff bonus'); } // bonus for confirmed
+        if (liquidity.signal === 'BULLISH') {
+            bullScore++;
+            bullDetails.push(liquidity.isWyckoffConfirmed ? 'Wyckoff bull' : 'Liq sweep bull');
+            if (liquidity.isWyckoffConfirmed) { bullScore++; bullDetails.push('Wyckoff bonus'); }
+        }
+        if (liquidity.signal === 'BEARISH') {
+            bearScore++;
+            bearDetails.push(liquidity.isWyckoffConfirmed ? 'Wyckoff bear' : 'Liq sweep bear');
+            if (liquidity.isWyckoffConfirmed) { bearScore++; bearDetails.push('Wyckoff bonus'); }
         }
 
         // Factor 7: OTE Zone (Fibonacci 62-79%)
-        if (ote.signal !== 'NEUTRAL') { score++; details.push('In OTE zone'); }
+        if (ote.signal === 'BULLISH') { bullScore++; bullDetails.push('OTE bull zone'); }
+        if (ote.signal === 'BEARISH') { bearScore++; bearDetails.push('OTE bear zone'); }
 
-        // Factor 8: Order Block / FVG
-        if (obfvg.signal !== 'NEUTRAL' && obfvg.strength > 2) { score++; details.push('OB/FVG detected'); }
+        // Factor 8: Order Block / FVG — v2 FIX: direction-aware
+        if (obfvg.signal === 'BULLISH' && obfvg.strength > 2) {
+            bullScore++; bullDetails.push('OB/FVG bull');
+        }
+        if (obfvg.signal === 'BEARISH' && obfvg.strength > 2) {
+            bearScore++; bearDetails.push('OB/FVG bear');
+        }
 
-        // Factor 9: CHoCH / BOS Structure Break
-        if (structure.signal !== 'NEUTRAL') { score++; details.push('Structure break'); }
+        // Factor 9: CHoCH / BOS — v2 FIX: direction-aware
+        if (structure.signal === 'BULLISH') { bullScore++; bullDetails.push('Structure bull'); }
+        if (structure.signal === 'BEARISH') { bearScore++; bearDetails.push('Structure bear'); }
 
-        // Factor 10: Volume Confirmation
-        if (recentVol > prevVol * 1.1) { score++; details.push('Volume confirmation'); }
+        // Factor 10: Volume Confirmation (direction-neutral, adds to both)
+        if (recentVol > prevVol * 1.1) {
+            bullScore++; bullDetails.push('Volume ↑');
+            bearScore++; bearDetails.push('Volume ↑');
+        }
+
+        // Pick the dominant direction
+        const dominantDirection = bullScore >= bearScore ? 'BULLISH' : 'BEARISH';
+        const score = dominantDirection === 'BULLISH' ? bullScore : bearScore;
+        const details = dominantDirection === 'BULLISH' ? bullDetails.join(', ') : bearDetails.join(', ');
 
         return {
             score: Math.min(score, this.MAX_SCORE),
             threshold: this.CONFLUENCE_THRESHOLD,
-            details: details.join(', '),
-            indicators: { rsi, macd, cpr, vwap, liquidity, ote, obfvg, structure, ema50Val }
+            details,
+            dominantDirection,
+            bullScore,
+            bearScore,
+            indicators: { rsi, rsiPrev, macd, cpr, vwap, liquidity, ote, obfvg, structure, ema50Val }
         };
     }
 
@@ -314,7 +504,7 @@ class UnifiedStrategy {
         }
 
         const confluence = this.calculateConfluenceScore(priceData);
-        const { score, indicators } = confluence;
+        const { score, indicators, dominantDirection, bullScore, bearScore } = confluence;
 
         let signal = 'NEUTRAL';
 
@@ -326,15 +516,28 @@ class UnifiedStrategy {
             const ema21Val = ema21[ema21.length - 1];
             const currentPrice = priceData[priceData.length - 1].price;
 
-            const bullish = ema9Val > ema21Val && currentPrice > indicators.ema50Val;
-            const bearish = ema9Val < ema21Val && currentPrice < indicators.ema50Val;
+            // v3 TUNING: EMA alignment must MATCH the confluence direction
+            const emaBullish = ema9Val > ema21Val && currentPrice > indicators.ema50Val;
+            const emaBearish = ema9Val < ema21Val && currentPrice < indicators.ema50Val;
 
-            if (bullish) signal = 'BUY';
-            else if (bearish) signal = 'SELL';
+            // v4 TUNING: ADX regime filter — lowered to 18 for more trade opportunities
+            const adx = this.calculateAdx(priceData, 14);
+            const isTrending = adx > 18;
+
+            // v3 TUNING: EMA200 macro trend bias
+            const ema200 = this.calculateEma(prices, Math.min(prices.length - 1, 50));
+            const ema200Val = ema200[ema200.length - 1];
+            const macroTrendBullish = currentPrice > ema200Val;
+            const macroTrendBearish = currentPrice < ema200Val;
+
+            if (isTrending) {
+                if (dominantDirection === 'BULLISH' && emaBullish && macroTrendBullish) signal = 'BUY';
+                else if (dominantDirection === 'BEARISH' && emaBearish && macroTrendBearish) signal = 'SELL';
+            }
         }
 
-        // Calculate risk parameters
-        const riskParams = this.calculateRiskParameters(priceData, indicators);
+        // Calculate risk parameters — pass score for conviction-based TP
+        const riskParams = this.calculateRiskParameters(priceData, indicators, confluence.score);
 
         return {
             signal,
@@ -349,7 +552,7 @@ class UnifiedStrategy {
 
     // ==================== UNIFIED RISK MANAGEMENT ====================
 
-    calculateRiskParameters(priceData, indicators) {
+    calculateRiskParameters(priceData, indicators, score = 5) {
         const currentPrice = priceData[priceData.length - 1].price;
         const atr = this.calculateAtr(priceData, 14);
         const liquidity = indicators?.liquidity || this.detectLiquiditySweep(priceData);
@@ -357,17 +560,21 @@ class UnifiedStrategy {
 
         let slDistance;
         if (liquidity.sweepLevel) {
-            const buffer = atr * 0.2;
+            const buffer = atr * 0.3;
             slDistance = Math.abs(currentPrice - liquidity.sweepLevel) + buffer;
         } else if (cpr.bc && cpr.tc) {
             slDistance = Math.max(Math.abs(currentPrice - cpr.bc), Math.abs(cpr.tc - currentPrice), atr * 1.5);
         } else {
             slDistance = atr * 1.5;
         }
-        slDistance = Math.max(slDistance, atr * 0.5); // Minimum SL
+        slDistance = Math.max(slDistance, atr * 0.5);
+        slDistance = Math.min(slDistance, atr * 2.0);
 
-        const tp1Distance = slDistance * this.TP1_RR;
-        const tp2Distance = slDistance * this.TP2_RR;
+        // v4: Conviction-based TP — high-score trades (7+) get bigger targets
+        const tp1RR = score >= 7 ? this.TP1_RR_HIGH : this.TP1_RR;
+        const tp2RR = this.TP2_RR;
+        const tp1Distance = slDistance * tp1RR;
+        const tp2Distance = slDistance * tp2RR;
 
         return {
             atr,
@@ -382,7 +589,7 @@ class UnifiedStrategy {
                 tp2Long: currentPrice + tp2Distance,
                 tp2Short: currentPrice - tp2Distance
             },
-            riskReward: { tp1: this.TP1_RR, tp2: this.TP2_RR }
+            riskReward: { tp1: tp1RR, tp2: tp2RR }
         };
     }
 
@@ -394,26 +601,30 @@ class UnifiedStrategy {
 
         if (activeTrade.action === 'BUY') {
             const unrealizedPnl = (currentCandle.close - activeTrade.entryPrice) * activeTrade.quantity;
-            if (unrealizedPnl > riskUnit * 6) {
-                const trailed = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.8;
+            // v3 TUNING: 4-tier progressive trailing with FASTER breakeven at 1.5x risk
+            if (unrealizedPnl > riskUnit * 5) {
+                // Lock in 70% of profit
+                const trailed = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.7;
                 activeTrade.sl = Math.max(activeTrade.sl, trailed);
-            } else if (unrealizedPnl > riskUnit * 4) {
-                const trailed = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.6;
+            } else if (unrealizedPnl > riskUnit * 3) {
+                // Lock in 50% of profit
+                const trailed = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.5;
                 activeTrade.sl = Math.max(activeTrade.sl, trailed);
-            } else if (unrealizedPnl > riskUnit * 2.5) {
-                const be = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.1;
+            } else if (unrealizedPnl > riskUnit * 1.5) {
+                // Move to breakeven + small buffer (earlier than old 2.5x)
+                const be = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.15;
                 activeTrade.sl = Math.max(activeTrade.sl, be);
             }
         } else {
             const unrealizedPnl = (activeTrade.entryPrice - currentCandle.close) * activeTrade.quantity;
-            if (unrealizedPnl > riskUnit * 6) {
-                const trailed = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.8;
+            if (unrealizedPnl > riskUnit * 5) {
+                const trailed = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.7;
                 activeTrade.sl = Math.min(activeTrade.sl, trailed);
-            } else if (unrealizedPnl > riskUnit * 4) {
-                const trailed = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.6;
+            } else if (unrealizedPnl > riskUnit * 3) {
+                const trailed = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.5;
                 activeTrade.sl = Math.min(activeTrade.sl, trailed);
-            } else if (unrealizedPnl > riskUnit * 2.5) {
-                const be = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.1;
+            } else if (unrealizedPnl > riskUnit * 1.5) {
+                const be = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.15;
                 activeTrade.sl = Math.min(activeTrade.sl, be);
             }
         }

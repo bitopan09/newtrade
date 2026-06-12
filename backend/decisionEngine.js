@@ -1,5 +1,23 @@
 const AnalysisEngine = require('./analysisEngine');
 
+// Known high-impact news dates (FOMC, CPI, NFP, etc.)
+// In production, this would be fetched dynamically from a news API
+const HIGH_IMPACT_NEWS_DATES = new Set([
+    // FOMC Meetings 2026
+    '2026-01-29', '2026-03-19', '2026-05-07', '2026-06-18',
+    '2026-07-30', '2026-09-17', '2026-11-05', '2026-12-17',
+    // CPI Release Dates 2026
+    '2026-01-14', '2026-02-12', '2026-03-12', '2026-04-14',
+    '2026-05-13', '2026-06-11', '2026-07-15', '2026-08-12',
+    '2026-09-15', '2026-10-14', '2026-11-12', '2026-12-10',
+    // NFP (Non-Farm Payrolls)
+    '2026-01-09', '2026-02-06', '2026-03-06', '2026-04-03',
+    '2026-05-01', '2026-06-05', '2026-07-02', '2026-08-07',
+    '2026-09-04', '2026-10-02', '2026-11-06', '2026-12-04',
+    // Major crypto-specific events
+    '2026-04-15', // Tax deadline
+]);
+
 class DecisionEngine {
     constructor() {
         this.analysisEngine = new AnalysisEngine();
@@ -10,6 +28,15 @@ class DecisionEngine {
 
         // Load persistent state (in a real app, this would be from database)
         this._loadState();
+    }
+
+    /**
+     * Check if today is a high-impact news day
+     * @returns {boolean} True if today is a news day
+     */
+    _isNewsDay() {
+        const today = new Date().toISOString().split('T')[0];
+        return HIGH_IMPACT_NEWS_DATES.has(today);
     }
 
     /**
@@ -79,29 +106,29 @@ class DecisionEngine {
             };
         }
 
-        // News filter placeholder (in real implementation, this would check news API)
-        const newsFilterPassed = true; // Simplified
-
-        if (!newsFilterPassed) {
+        // v2 FIX: Real news day filter (replaces hardcoded true)
+        if (this._isNewsDay()) {
+            console.log(`[DecisionEngine] 🚫 News day detected — skipping trade.`);
             return {
                 action: 'SKIP',
-                reason: 'News filter blocked trade',
+                reason: 'High-impact news day (FOMC/CPI/NFP) — trade blocked',
                 details: {
                     score: analysis.score,
                     analysis: analysis.details,
-                    newsFilterPassed: false
+                    newsFilterPassed: false,
+                    newsDate: new Date().toISOString().split('T')[0]
                 }
             };
         }
 
-        // Check if score meets minimum threshold (7/10 = A+ trade, matches UnifiedStrategy)
-        if (analysis.score < 7) {
+        // Check if score meets minimum threshold (matches UnifiedStrategy v2)
+        if (analysis.score < 5) {
             return {
                 action: 'SKIP',
                 reason: `Confluence score too low: ${analysis.score}/10`,
                 details: {
                     score: analysis.score,
-                    threshold: 7,
+                    threshold: 5,
                     analysis: analysis.details
                 }
             };
@@ -173,17 +200,14 @@ class DecisionEngine {
     _saveState() {
         try {
             // In a real implementation, this would save to database or file
-            // For now, we'll just use localStorage (client-side only)
-            // In backend, we'd use a database or file system
+            // In Node.js backend, we'd use fs or a database
             const state = {
                 dailyTradeTaken: this.dailyTradeTaken,
                 dailyLossCount: this.dailyLossCount,
                 lastTradeDate: this.lastTradeDate,
                 circuitBreakerActive: this.circuitBreakerActive
             };
-            // Note: localStorage is client-side only, this is just for illustration
-            // In Node.js backend, we'd use fs or a database
-            // localStorage.setItem('tradingBotState', JSON.stringify(state));
+            // Note: In Node.js backend, we'd use fs or a database
         } catch (error) {
             console.error('Error saving state:', error);
         }

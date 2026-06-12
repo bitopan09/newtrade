@@ -154,7 +154,7 @@ class TradingBot {
                     }
                 }
                 
-                const riskAmount = baseBalance * 0.10;
+                const riskAmount = baseBalance * 0.05; // v3: 5% risk per trade (safer for small accounts)
                 const slDistance = Math.max(Math.abs(currentPrice - sl), 0.1); // Prevent division by zero
                 const rawQuantity = riskAmount / slDistance;
                 const quantity = parseFloat(Math.min(0.04, Math.max(0.01, rawQuantity)).toFixed(5)); // Clamp lot to 0.01-0.04
@@ -416,10 +416,10 @@ class TradingBot {
                     const exitResult = uStrategy.checkTradeExit(activeTrade, currentCandle);
                     if (exitResult.closed) {
                         equity += exitResult.pnl;
-                        if (equity < initialEquity) equity = initialEquity;
+                        // v2 FIX: removed equity floor for honest drawdown tracking
                         if (exitResult.pnl < 0) {
                             consecutiveLosses++;
-                            if (consecutiveLosses >= 2) { cooldownCandles = 3; consecutiveLosses = 0; }
+                            if (consecutiveLosses >= 2) { cooldownCandles = 5; consecutiveLosses = 0; } // v3: longer cooldown
                         } else { consecutiveLosses = 0; }
                         
                         activeTrade.pnl = exitResult.pnl;
@@ -452,7 +452,7 @@ class TradingBot {
                                     baseBalance *= 2;
                                 }
                             }
-                            const riskAmount = baseBalance * 0.10;
+                            const riskAmount = baseBalance * 0.05; // v3: 5% risk per trade
                             const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
                             const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
                             const rawQuantity = riskAmount / slDistance;
