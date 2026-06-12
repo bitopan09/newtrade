@@ -18,11 +18,9 @@ class UnifiedStrategy {
         this.CONFLUENCE_THRESHOLD = 5; // Strict direction-aware scoring means 5/10 is high quality
         this.MAX_SCORE = 10;
         this.DEFAULT_QUANTITY = 0.01;
-        this.LOT_MIN = 0.01;  // Minimum lot size
+        this.LOT_MIN = 0.001;  // Minimum lot size
         this.LOT_MAX = 0.04;  // Maximum lot size
-        this.TP1_RR = 2.5;  // 1:2.5 Risk-Reward for TP1 (base target)
-        this.TP2_RR = 5;    // 1:5 Risk-Reward for TP2
-        this.TP1_RR_HIGH = 3; // 1:3 RR for high-conviction trades (score >= 7)
+        this.PARTIAL_TP_RR = 1.2; // 1:1.2 Risk-Reward for closing 50%
     }
 
     /**
@@ -438,6 +436,16 @@ class UnifiedStrategy {
             bearScore++; bearDetails.push('CPR bearish');
         }
 
+        // 6. Liquidity Sweeps (Highest probability setup) - Institutional entry
+        const liqSweep = this.detectLiquiditySweep(priceData);
+        if (liqSweep.sweepType === 'BULLISH') {
+            bullScore += 2; // Bonus points for sweep
+            bullDetails.push('Liq sweep bull');
+        } else if (liqSweep.sweepType === 'BEARISH') {
+            bearScore += 2; // Bonus points for sweep
+            bearDetails.push('Liq sweep bear');
+        }
+
         // Factor 5: VWAP — v2 FIX: only count when price is near VWAP (proximity check)
         if (vwap.signal === 'BULLISH') {
             bullScore++; bullDetails.push('VWAP aligned');
@@ -446,12 +454,6 @@ class UnifiedStrategy {
             bearScore++; bearDetails.push('VWAP aligned');
         }
 
-        // Factor 6: Liquidity Sweep / Wyckoff
-        if (liquidity.signal === 'BULLISH') {
-            bullScore++;
-            bullDetails.push(liquidity.isWyckoffConfirmed ? 'Wyckoff bull' : 'Liq sweep bull');
-            if (liquidity.isWyckoffConfirmed) { bullScore++; bullDetails.push('Wyckoff bonus'); }
-        }
         if (liquidity.signal === 'BEARISH') {
             bearScore++;
             bearDetails.push(liquidity.isWyckoffConfirmed ? 'Wyckoff bear' : 'Liq sweep bear');
@@ -570,11 +572,8 @@ class UnifiedStrategy {
         slDistance = Math.max(slDistance, atr * 0.5);
         slDistance = Math.min(slDistance, atr * 2.0);
 
-        // v4: Conviction-based TP — high-score trades (7+) get bigger targets
-        const tp1RR = score >= 7 ? this.TP1_RR_HIGH : this.TP1_RR;
-        const tp2RR = this.TP2_RR;
-        const tp1Distance = slDistance * tp1RR;
-        const tp2Distance = slDistance * tp2RR;
+        // Veteran logic: Partial TP at 1.2RR, no hard TP1/TP2
+        const partialTpDistance = slDistance * this.PARTIAL_TP_RR;
 
         return {
             atr,
@@ -584,12 +583,10 @@ class UnifiedStrategy {
                 short: currentPrice + slDistance
             },
             takeProfit: {
-                tp1Long: currentPrice + tp1Distance,
-                tp1Short: currentPrice - tp1Distance,
-                tp2Long: currentPrice + tp2Distance,
-                tp2Short: currentPrice - tp2Distance
+                partialLong: currentPrice + partialTpDistance,
+                partialShort: currentPrice - partialTpDistance
             },
-            riskReward: { tp1: tp1RR, tp2: tp2RR }
+            riskReward: { partial: this.PARTIAL_TP_RR }
         };
     }
 
@@ -597,35 +594,28 @@ class UnifiedStrategy {
 
     applyTrailingStop(activeTrade, currentCandle) {
         const atr = activeTrade.atr || 500;
-        const riskUnit = activeTrade.quantity * atr;
 
         if (activeTrade.action === 'BUY') {
-            const unrealizedPnl = (currentCandle.close - activeTrade.entryPrice) * activeTrade.quantity;
-            // v3 TUNING: 4-tier progressive trailing with FASTER breakeven at 1.5x risk
-            if (unrealizedPnl > riskUnit * 5) {
-                // Lock in 70% of profit
-                const trailed = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.7;
-                activeTrade.sl = Math.max(activeTrade.sl, trailed);
-            } else if (unrealizedPnl > riskUnit * 3) {
-                // Lock in 50% of profit
-                const trailed = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.5;
-                activeTrade.sl = Math.max(activeTrade.sl, trailed);
-            } else if (unrealizedPnl > riskUnit * 1.5) {
-                // Move to breakeven + small buffer (earlier than old 2.5x)
-                const be = activeTrade.entryPrice + (currentCandle.high - activeTrade.entryPrice) * 0.15;
-                activeTrade.sl = Math.max(activeTrade.sl, be);
+            // Chandelier Exit Logic
+            activeTrade.highestPrice = Math.max(activeTrade.highestPrice || activeTrade.entryPrice, currentCandle.high);
+            const chandelierStop = activeTrade.highestPrice - (atr * 2);
+
+            // Only trail UP
+            activeTrade.sl = Math.max(activeTrade.sl, chandelierStop);
+
+            // If partial closed, SL must be AT LEAST break-even
+            if (activeTrade.partialClosed) {
+                activeTrade.sl = Math.max(activeTrade.sl, activeTrade.entryPrice);
             }
         } else {
-            const unrealizedPnl = (activeTrade.entryPrice - currentCandle.close) * activeTrade.quantity;
-            if (unrealizedPnl > riskUnit * 5) {
-                const trailed = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.7;
-                activeTrade.sl = Math.min(activeTrade.sl, trailed);
-            } else if (unrealizedPnl > riskUnit * 3) {
-                const trailed = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.5;
-                activeTrade.sl = Math.min(activeTrade.sl, trailed);
-            } else if (unrealizedPnl > riskUnit * 1.5) {
-                const be = activeTrade.entryPrice - (activeTrade.entryPrice - currentCandle.low) * 0.15;
-                activeTrade.sl = Math.min(activeTrade.sl, be);
+            activeTrade.lowestPrice = Math.min(activeTrade.lowestPrice || activeTrade.entryPrice, currentCandle.low);
+            const chandelierStop = activeTrade.lowestPrice + (atr * 2);
+
+            // Only trail DOWN
+            activeTrade.sl = Math.min(activeTrade.sl, chandelierStop);
+
+            if (activeTrade.partialClosed) {
+                activeTrade.sl = Math.min(activeTrade.sl, activeTrade.entryPrice);
             }
         }
         return activeTrade;
@@ -636,33 +626,36 @@ class UnifiedStrategy {
     checkTradeExit(activeTrade, currentCandle) {
         this.applyTrailingStop(activeTrade, currentCandle);
 
-        let exitPrice = null;
-        let exitReason = '';
-
         if (activeTrade.action === 'BUY') {
+            // Partial TP
+            if (!activeTrade.partialClosed && currentCandle.high >= activeTrade.partialTp) {
+                return { closed: false, partialClose: true, exitPrice: activeTrade.partialTp };
+            }
+            // Final SL or Trailing Exit
             if (currentCandle.low <= activeTrade.sl) {
-                exitPrice = activeTrade.sl;
-                exitReason = activeTrade.sl >= activeTrade.entryPrice ? 'Trailing SL (BE+)' : 'Stop Loss';
-            } else if (currentCandle.high >= activeTrade.tp1) {
-                exitPrice = activeTrade.tp1;
-                exitReason = 'Take Profit';
+                return { 
+                    closed: true, 
+                    exitPrice: activeTrade.sl, 
+                    exitReason: activeTrade.sl >= activeTrade.entryPrice ? 'Trailing SL (BE+)' : 'Stop Loss',
+                    pnl: (activeTrade.sl - activeTrade.entryPrice) * activeTrade.quantity 
+                };
             }
         } else {
+            // Partial TP
+            if (!activeTrade.partialClosed && currentCandle.low <= activeTrade.partialTp) {
+                return { closed: false, partialClose: true, exitPrice: activeTrade.partialTp };
+            }
+            // Final SL or Trailing Exit
             if (currentCandle.high >= activeTrade.sl) {
-                exitPrice = activeTrade.sl;
-                exitReason = activeTrade.sl <= activeTrade.entryPrice ? 'Trailing SL (BE+)' : 'Stop Loss';
-            } else if (currentCandle.low <= activeTrade.tp1) {
-                exitPrice = activeTrade.tp1;
-                exitReason = 'Take Profit';
+                return { 
+                    closed: true, 
+                    exitPrice: activeTrade.sl, 
+                    exitReason: activeTrade.sl <= activeTrade.entryPrice ? 'Trailing SL (BE+)' : 'Stop Loss',
+                    pnl: (activeTrade.entryPrice - activeTrade.sl) * activeTrade.quantity 
+                };
             }
         }
 
-        if (exitPrice !== null) {
-            const pnl = activeTrade.action === 'BUY'
-                ? (exitPrice - activeTrade.entryPrice) * activeTrade.quantity
-                : (activeTrade.entryPrice - exitPrice) * activeTrade.quantity;
-            return { closed: true, exitPrice, exitReason, pnl };
-        }
         return { closed: false };
     }
 }

@@ -76,9 +76,10 @@ class ExecutionEngine {
 
         // Use dynamic SL/TP from the signal
         const sl = signal.sl || (action === 'BUY' ? entryPrice - 100 : entryPrice + 100);
-        const tp1 = signal.tp1 || (action === 'BUY' ? entryPrice + 300 : entryPrice - 300);
+        const tp1 = signal.partialTp || (action === 'BUY' ? entryPrice + 300 : entryPrice - 300);
         const score = signal.score || 0;
         const notes = signal.notes || '';
+        const atr = signal.atr || 500;
 
         return new Promise((resolve) => {
             const self = this;
@@ -103,7 +104,7 @@ class ExecutionEngine {
                         quantity: tradeQuantity,
                         timestamp,
                         status: 'OPEN',
-                        sl, tp1, score, notes
+                        sl, tp1, score, notes, atr, partialClosed: false
                     };
 
                     // Add to active trades
@@ -133,50 +134,46 @@ class ExecutionEngine {
             let exitPrice = null;
             let exitReason = '';
 
-            // === TRAILING STOP LOSS LOGIC ===
+            // === TRAILING STOP LOSS & PARTIAL TP LOGIC ===
             if (trade.action === 'BUY') {
-                const unrealizedPnl = (currentPrice - trade.entry_price) * trade.quantity;
-                
-                // Trail SL aggressively as profit grows
-                if (unrealizedPnl > 2.50 * 6) {
-                    const trailed = trade.entry_price + (currentPrice - trade.entry_price) * 0.8;
-                    trade.sl = Math.max(trade.sl, trailed);
-                } else if (unrealizedPnl > 2.50 * 4) {
-                    const trailed = trade.entry_price + (currentPrice - trade.entry_price) * 0.6;
-                    trade.sl = Math.max(trade.sl, trailed);
-                } else if (unrealizedPnl > 2.50 * 2.5) {
-                    const breakevenPlus = trade.entry_price + (currentPrice - trade.entry_price) * 0.1;
-                    trade.sl = Math.max(trade.sl, breakevenPlus);
+                // Partial TP Check
+                if (!trade.partialClosed && currentPrice >= trade.tp1) {
+                    this._partialCloseTrade(tradeId, trade.tp1);
+                    continue; // Skip the rest this tick
+                }
+
+                // Chandelier Trailing Logic
+                trade.highestPrice = Math.max(trade.highestPrice || trade.entry_price, currentPrice);
+                const chandelierStop = trade.highestPrice - (trade.atr * 2);
+                trade.sl = Math.max(trade.sl, chandelierStop);
+
+                if (trade.partialClosed) {
+                    trade.sl = Math.max(trade.sl, trade.entry_price);
                 }
 
                 if (currentPrice <= trade.sl) {
                     exitPrice = trade.sl;
                     exitReason = trade.sl >= trade.entry_price ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
-                } else if (currentPrice >= trade.tp1) {
-                    exitPrice = currentPrice; // Take full wick
-                    exitReason = 'Take Profit (Max)';
                 }
             } else if (trade.action === 'SELL') {
-                const unrealizedPnl = (trade.entry_price - currentPrice) * trade.quantity;
-                
-                // Trail SL aggressively
-                if (unrealizedPnl > 2.50 * 6) {
-                    const trailed = trade.entry_price - (trade.entry_price - currentPrice) * 0.8;
-                    trade.sl = Math.min(trade.sl, trailed);
-                } else if (unrealizedPnl > 2.50 * 4) {
-                    const trailed = trade.entry_price - (trade.entry_price - currentPrice) * 0.6;
-                    trade.sl = Math.min(trade.sl, trailed);
-                } else if (unrealizedPnl > 2.50 * 2.5) {
-                    const breakevenPlus = trade.entry_price - (trade.entry_price - currentPrice) * 0.1;
-                    trade.sl = Math.min(trade.sl, breakevenPlus);
+                // Partial TP Check
+                if (!trade.partialClosed && currentPrice <= trade.tp1) {
+                    this._partialCloseTrade(tradeId, trade.tp1);
+                    continue;
+                }
+
+                // Chandelier Trailing Logic
+                trade.lowestPrice = Math.min(trade.lowestPrice || trade.entry_price, currentPrice);
+                const chandelierStop = trade.lowestPrice + (trade.atr * 2);
+                trade.sl = Math.min(trade.sl, chandelierStop);
+
+                if (trade.partialClosed) {
+                    trade.sl = Math.min(trade.sl, trade.entry_price);
                 }
 
                 if (currentPrice >= trade.sl) {
                     exitPrice = trade.sl;
                     exitReason = trade.sl <= trade.entry_price ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
-                } else if (currentPrice <= trade.tp1) {
-                    exitPrice = currentPrice;
-                    exitReason = 'Take Profit (Max)';
                 }
             }
 
@@ -184,6 +181,46 @@ class ExecutionEngine {
                 this._closeTrade(tradeId, exitPrice, exitReason);
             }
         }
+    }
+
+    /**
+     * Partially close a trade (50%)
+     * @param {number} tradeId - Trade ID
+     * @param {number} exitPrice - Exit price
+     */
+    _partialCloseTrade(tradeId, exitPrice) {
+        const trade = this.activeTrades.get(tradeId);
+        if (!trade) return;
+
+        const halfQty = trade.quantity * 0.5;
+        let partialPnl = 0;
+        if (trade.action === 'BUY') {
+            partialPnl = (exitPrice - trade.entry_price) * halfQty;
+        } else {
+            partialPnl = (trade.entry_price - exitPrice) * halfQty;
+        }
+
+        trade.quantity -= halfQty;
+        trade.partialClosed = true;
+
+        const userId = trade.userId || 'default';
+
+        // Update database (log partial trade if desired, or just update quantity)
+        this.db.run(
+            `UPDATE trades SET quantity = ? WHERE id = ?`,
+            [trade.quantity, tradeId]
+        );
+
+        // Update balance
+        this.db.get(`SELECT * FROM balance WHERE userId = ? ORDER BY timestamp DESC LIMIT 1`, [userId], (err, balance) => {
+            if (!err && balance) {
+                const newBalance = balance.usd_balance + partialPnl;
+                this.db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, ?)`, 
+                    [userId, newBalance, balance.btc_balance]);
+            }
+        });
+
+        this._sendAlert(`[${userId}] Partial TP Hit: ${trade.action} ${halfQty} BTC at $${exitPrice.toFixed(2)}. SL moved to BE.`);
     }
 
     /**

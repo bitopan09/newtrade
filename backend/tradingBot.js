@@ -137,8 +137,7 @@ class TradingBot {
                 const currentPrice = this.priceData[this.priceData.length - 1].price;
                 const riskParams = decision.details.analysis.riskCalculator;
                 const sl = decision.action === 'BUY' ? riskParams.stopLoss.long : riskParams.stopLoss.short;
-                const tp1 = decision.action === 'BUY' ? riskParams.takeProfit.tp1Long : riskParams.takeProfit.tp1Short;
-                const tp2 = decision.action === 'BUY' ? riskParams.takeProfit.tp2Long : riskParams.takeProfit.tp2Short;
+                const partialTp = decision.action === 'BUY' ? riskParams.takeProfit.partialLong : riskParams.takeProfit.partialShort;
                 // Get current balance and calculate dynamic quantity based on tiered risk
                 const balanceRow = await new Promise((resolve) => {
                     this.db.get(`SELECT * FROM balance WHERE userId = 'default' ORDER BY timestamp DESC LIMIT 1`, [], (err, row) => {
@@ -165,8 +164,9 @@ class TradingBot {
                     quantity: quantity,
                     sl: sl,
                     originalSl: sl,
-                    tp1: tp1,
-                    tp2: tp2,
+                    partialTp: partialTp,
+                    partialClosed: false,
+                    atr: riskParams.atr,
                     score: decision.details.score,
                     notes: decision.details.analysis.confluenceScorer?.details || ''
                 };
@@ -432,6 +432,29 @@ class TradingBot {
                 // Check active trade exit using UnifiedStrategy
                 if (activeTrade) {
                     const exitResult = uStrategy.checkTradeExit(activeTrade, currentCandle);
+                    
+                    if (exitResult.partialClose) {
+                        const halfQty = activeTrade.quantity * 0.5;
+                        const partialPnl = activeTrade.action === 'BUY'
+                            ? (exitResult.exitPrice - activeTrade.entryPrice) * halfQty
+                            : (activeTrade.entryPrice - exitResult.exitPrice) * halfQty;
+                            
+                        equity += partialPnl;
+                        activeTrade.quantity -= halfQty;
+                        activeTrade.partialClosed = true;
+                        
+                        trades.push({
+                            ...activeTrade,
+                            quantity: halfQty,
+                            pnl: partialPnl,
+                            exitTimestamp: currentCandle.timestamp,
+                            exitReason: 'Partial TP (50%)',
+                            exitPrice: exitResult.exitPrice,
+                            status: 'CLOSED_PARTIAL'
+                        });
+                        continue;
+                    }
+
                     if (exitResult.closed) {
                         equity += exitResult.pnl;
                         
@@ -493,8 +516,8 @@ class TradingBot {
                                 quantity,
                                 sl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
                                 originalSl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
-                                tp1: analysis.signal === 'BUY' ? rp.takeProfit.tp1Long : rp.takeProfit.tp1Short,
-                                tp2: analysis.signal === 'BUY' ? rp.takeProfit.tp2Long : rp.takeProfit.tp2Short,
+                                partialTp: analysis.signal === 'BUY' ? rp.takeProfit.partialLong : rp.takeProfit.partialShort,
+                                partialClosed: false,
                                 atr: rp.atr,
                                 score: analysis.score,
                                 confluence: analysis.details.confluenceScorer?.details || '',
@@ -507,7 +530,7 @@ class TradingBot {
             }
 
             // 4. Calculate final metrics
-            const completedTrades = trades.filter(t => t.status === 'CLOSED');
+            const completedTrades = trades.filter(t => t.status === 'CLOSED' || t.status === 'CLOSED_PARTIAL');
             const wins = completedTrades.filter(t => t.pnl > 0);
             const winRate = completedTrades.length > 0 ? wins.length / completedTrades.length : 0;
             const totalProfit = wins.reduce((s, t) => s + t.pnl, 0);

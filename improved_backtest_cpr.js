@@ -111,16 +111,40 @@ async function runBacktest() {
         // Check active trade exit
         if (activeTrade) {
             const exitResult = strategy.checkTradeExit(activeTrade, currentCandle);
+            
+            if (exitResult.partialClose) {
+                const halfQty = activeTrade.quantity * 0.5;
+                const partialPnl = activeTrade.action === 'BUY'
+                    ? (exitResult.exitPrice - activeTrade.entryPrice) * halfQty
+                    : (activeTrade.entryPrice - exitResult.exitPrice) * halfQty;
+                    
+                equity += partialPnl;
+                activeTrade.quantity -= halfQty; // Keep remaining 50%
+                activeTrade.partialClosed = true;
+                
+                // Log the partial close
+                trades.push({
+                    ...activeTrade,
+                    quantity: halfQty,
+                    pnl: partialPnl,
+                    exitTimestamp: currentCandle.timestamp,
+                    exitReason: 'Partial TP (50%)',
+                    exitPrice: exitResult.exitPrice,
+                    status: 'CLOSED_PARTIAL',
+                    equityAfter: equity
+                });
+                continue;
+            }
+
             if (exitResult.closed) {
                 equity += exitResult.pnl;
-                if (equity < minEquity) minEquity = equity;
-
+                
+                // v4 FIX: removed equity floor for honest drawdown tracking
                 if (exitResult.pnl < 0) {
                     consecutiveLosses++;
                     if (consecutiveLosses >= 2) { cooldownCandles = 3; consecutiveLosses = 0; }
                 } else {
                     consecutiveLosses = 0;
-                    // v4: After profitable exit — NO cooldown, allow immediate trend continuation
                     cooldownCandles = 0;
                 }
 
@@ -173,8 +197,8 @@ async function runBacktest() {
                         quantity,
                         sl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
                         originalSl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
-                        tp1: analysis.signal === 'BUY' ? rp.takeProfit.tp1Long : rp.takeProfit.tp1Short,
-                        tp2: analysis.signal === 'BUY' ? rp.takeProfit.tp2Long : rp.takeProfit.tp2Short,
+                        partialTp: analysis.signal === 'BUY' ? rp.takeProfit.partialLong : rp.takeProfit.partialShort,
+                        partialClosed: false,
                         atr: rp.atr,
                         score: analysis.score,
                         confluence: analysis.details.confluenceScorer?.details || '',
@@ -189,7 +213,7 @@ async function runBacktest() {
     }
 
     // ==================== RESULTS ====================
-    const completedTrades = trades.filter(t => t.status === 'CLOSED');
+    const completedTrades = trades.filter(t => t.status === 'CLOSED' || t.status === 'CLOSED_PARTIAL');
     const wins = completedTrades.filter(t => t.pnl > 0);
     const losses = completedTrades.filter(t => t.pnl <= 0);
     const winRate = completedTrades.length > 0 ? wins.length / completedTrades.length : 0;
