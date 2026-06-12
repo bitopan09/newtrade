@@ -480,7 +480,7 @@ class TradingBot {
                                     baseBalance *= 2;
                                 }
                             }
-                            const riskAmount = baseBalance * 0.07;
+                            const riskAmount = baseBalance * 0.05;
                             const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
                             const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
                             const rawQuantity = riskAmount / slDistance;
