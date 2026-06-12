@@ -165,7 +165,7 @@ async function runBacktest() {
                     const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
                     const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
                     const rawQuantity = riskAmount / slDistance;
-                    const quantity = parseFloat(Math.min(0.04, Math.max(0.01, rawQuantity)).toFixed(5));
+                    const quantity = parseFloat(Math.min(0.04, Math.max(0.001, rawQuantity)).toFixed(5));
                     activeTrade = {
                         id: trades.length + 1,
                         action: analysis.signal,
