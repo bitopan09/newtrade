@@ -397,6 +397,24 @@ class TradingBot {
             const UnifiedStrategy = require('./unifiedStrategy');
             const uStrategy = new UnifiedStrategy();
             
+            const HIGH_IMPACT_NEWS_DATES = new Set([
+                '2026-01-29', '2026-03-19', '2026-05-07', '2026-06-18',
+                '2026-07-30', '2026-09-17', '2026-11-05', '2026-12-17',
+                '2026-01-14', '2026-02-12', '2026-03-12', '2026-04-14',
+                '2026-05-13', '2026-06-11', '2026-07-15', '2026-08-12',
+                '2026-09-15', '2026-10-14', '2026-11-12', '2026-12-10',
+                '2026-01-09', '2026-02-06', '2026-03-06', '2026-04-03',
+                '2026-05-01', '2026-06-05', '2026-07-02', '2026-08-07',
+                '2026-09-04', '2026-10-02', '2026-11-06', '2026-12-04',
+                '2026-04-15'
+            ]);
+
+            function isNewsDay(timestamp) {
+                if (!(timestamp instanceof Date)) timestamp = new Date(timestamp);
+                const dateStr = timestamp.toISOString().split('T')[0];
+                return HIGH_IMPACT_NEWS_DATES.has(dateStr);
+            }
+            
             // 3. Loop through data using UnifiedStrategy logic
             for (let i = 50; i < historicalData.length; i++) {
                 const currentWindow = historicalData.slice(i - 50, i);
@@ -416,11 +434,14 @@ class TradingBot {
                     const exitResult = uStrategy.checkTradeExit(activeTrade, currentCandle);
                     if (exitResult.closed) {
                         equity += exitResult.pnl;
-                        // v2 FIX: removed equity floor for honest drawdown tracking
+                        
                         if (exitResult.pnl < 0) {
                             consecutiveLosses++;
-                            if (consecutiveLosses >= 2) { cooldownCandles = 5; consecutiveLosses = 0; } // v3: longer cooldown
-                        } else { consecutiveLosses = 0; }
+                            if (consecutiveLosses >= 2) { cooldownCandles = 3; consecutiveLosses = 0; }
+                        } else {
+                            consecutiveLosses = 0;
+                            cooldownCandles = 0;
+                        }
                         
                         activeTrade.pnl = exitResult.pnl;
                         activeTrade.exitTimestamp = currentCandle.timestamp;
@@ -432,12 +453,20 @@ class TradingBot {
                     }
                 }
 
-                // New entry using UnifiedStrategy with session hour gate (8:00 AM - 4:00 PM UTC)
                 if (!activeTrade) {
-                    const hour = currentCandle.timestamp.getUTCHours();
-                    const minute = currentCandle.timestamp.getUTCMinutes();
+                    let dateObj;
+                    try {
+                        dateObj = (currentCandle.timestamp instanceof Date) ? currentCandle.timestamp : new Date(currentCandle.timestamp);
+                    } catch (e) {
+                        dateObj = new Date();
+                    }
+
+                    const hour = dateObj.getUTCHours();
+                    const minute = dateObj.getUTCMinutes();
                     const timeInMinutes = hour * 60 + minute;
-                    const isSessionOpen = (timeInMinutes >= 8 * 60 && timeInMinutes <= 16 * 60);
+                    const isSessionOpen = (timeInMinutes >= 6 * 60 && timeInMinutes <= 18 * 60);
+
+                    if (isNewsDay(dateObj)) continue;
 
                     if (isSessionOpen) {
                         const analysis = uStrategy.analyze(currentWindow);
@@ -445,18 +474,18 @@ class TradingBot {
                         if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
                             const rp = analysis.details.riskCalculator;
                             
-                            // Dynamic tier-based position sizing
                             let baseBalance = 50;
                             if (equity >= 100) {
                                 while (baseBalance * 2 <= equity) {
                                     baseBalance *= 2;
                                 }
                             }
-                            const riskAmount = baseBalance * 0.05; // v3: 5% risk per trade
+                            const riskAmount = baseBalance * 0.07;
                             const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
                             const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
                             const rawQuantity = riskAmount / slDistance;
-                            const quantity = parseFloat(Math.min(0.04, Math.max(0.01, rawQuantity)).toFixed(5)); // Clamp lot to 0.01-0.04
+                            const quantity = parseFloat(Math.min(0.04, Math.max(0.01, rawQuantity)).toFixed(5));
+                            
                             activeTrade = {
                                 id: trades.length + 1,
                                 action: analysis.signal,
