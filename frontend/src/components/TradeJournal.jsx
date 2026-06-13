@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { fetchTrades, exportTradesCsvUrl, userId } from '../services/api';
+import { exportTradesCsvUrl, fetchTrades, getSelectedTerminal } from '../services/api';
 import { formatTimeIST } from '../utils/timeFormatter';
 
 const TradeJournal = () => {
     const [trades, setTrades] = useState([]);
     const [loading, setLoading] = useState(true);
+    const terminal = getSelectedTerminal();
 
     useEffect(() => {
         const fetchTradesData = async () => {
@@ -39,9 +40,9 @@ const TradeJournal = () => {
             <div className="journal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                     <h2 style={{ marginBottom: '4px' }}>Trade Journal (Paper Trading)</h2>
-                    <small style={{ color: '#94a3b8', fontSize: '12px' }}>User: {userId.substring(0, 16)}...</small>
+                    <small style={{ color: '#94a3b8', fontSize: '12px' }}>Terminal: {terminal?.displayName || 'Selected'}</small>
                 </div>
-                <a href={exportTradesCsvUrl} className="btn-export" download="trade_journal.csv">
+                <a href={exportTradesCsvUrl()} className="btn-export" download="trade_journal.csv">
                     📥 Export to Excel
                 </a>
             </div>

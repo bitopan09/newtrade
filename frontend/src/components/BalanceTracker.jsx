@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { fetchBalance, fetchPrice, userId } from '../services/api';
+import { fetchBalance, fetchPrice, getSelectedTerminal } from '../services/api';
 
 const BalanceTracker = () => {
     const [balanceData, setBalanceData] = useState(null);
     const [currentPrice, setCurrentPrice] = useState(0);
     const [loading, setLoading] = useState(true);
+    const terminal = getSelectedTerminal();
 
     useEffect(() => {
         const fetchData = async () => {
@@ -53,7 +54,7 @@ const BalanceTracker = () => {
         <div className="balance-container">
             <h2>Balance Tracker</h2>
             <div className="user-id-small" style={{ fontSize: '0.75em', color: '#64748b', marginBottom: '10px' }}>
-                User: {userId.substring(0, 12)}...
+                Terminal: {terminal?.displayName || 'Selected'}
             </div>
             <div className="balance-details">
                 <div className="balance-item">

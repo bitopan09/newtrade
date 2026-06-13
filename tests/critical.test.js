@@ -4,6 +4,8 @@ const UnifiedStrategy = require('../backend/unifiedStrategy');
 const DecisionEngine = require('../backend/decisionEngine');
 const TradingBot = require('../backend/tradingBot');
 const ExecutionEngine = require('../backend/executionEngine');
+const sqlite3 = require('sqlite3').verbose();
+const terminalStore = require('../backend/terminalStore');
 
 function makeTradingBotHarness() {
     return Object.create(TradingBot.prototype);
@@ -231,6 +233,65 @@ async function testExecutionRejectsOutOfRangeLotSize() {
     assert.match(invalidStep.reason, /0.01, 0.02, 0.03, or 0.04 BTC/);
 }
 
+async function makeTerminalTestDb() {
+    const db = new sqlite3.Database(':memory:');
+    await terminalStore.dbRun(db, `CREATE TABLE balance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT DEFAULT 'default',
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        usd_balance REAL,
+        btc_balance REAL
+    )`);
+    await terminalStore.createTerminalTables(db);
+    return db;
+}
+
+async function closeDb(db) {
+    await new Promise((resolve, reject) => db.close(err => err ? reject(err) : resolve()));
+}
+
+async function testTerminalArchiveRestoreAndStartingBalance() {
+    const db = await makeTerminalTestDb();
+    try {
+        const terminal = await terminalStore.createTerminal(db, { displayName: 'Bitopan' });
+        const balance = await terminalStore.dbGet(db, `SELECT * FROM balance WHERE userId = ?`, [terminal.userId]);
+
+        assert.strictEqual(terminal.displayName, 'Bitopan');
+        assert.strictEqual(balance.usd_balance, 50);
+        assert.strictEqual(balance.btc_balance, 0);
+
+        await terminalStore.archiveTerminal(db, terminal.userId);
+        const active = await terminalStore.listTerminals(db, false);
+        const all = await terminalStore.listTerminals(db, true);
+        assert.strictEqual(active.length, 0);
+        assert.strictEqual(all.length, 1);
+        assert.strictEqual(all[0].archived, 1);
+
+        await terminalStore.restoreTerminal(db, terminal.userId);
+        const restored = await terminalStore.listTerminals(db, false);
+        assert.strictEqual(restored.length, 1);
+        assert.strictEqual(restored[0].archived, 0);
+    } finally {
+        await closeDb(db);
+    }
+}
+
+async function testManualExitRejectsOtherTerminalTrade() {
+    const engine = makeExecutionEngineHarness();
+    engine.activeTrades.set(1, {
+        id: 1,
+        userId: 'terminal_a',
+        action: 'BUY',
+        entry_price: 50000,
+        quantity: 0.01,
+        status: 'OPEN'
+    });
+
+    const result = await engine.manualExitTrade(1, 50100, 'terminal_b');
+    assert.strictEqual(result.success, false);
+    assert.match(result.reason, /this terminal/);
+}
+
 async function run() {
     const tests = [
         testPositionSizingAllowsOnePercentRisk,
@@ -242,7 +303,9 @@ async function run() {
         testSameCandleStopWinsOverTakeProfit,
         testTrailingMovesStopToBreakevenAfterOneR,
         testDecisionEngineDailyTradeLimit,
-        testExecutionRejectsOutOfRangeLotSize
+        testExecutionRejectsOutOfRangeLotSize,
+        testTerminalArchiveRestoreAndStartingBalance,
+        testManualExitRejectsOtherTerminalTrade
     ];
 
     for (const test of tests) {

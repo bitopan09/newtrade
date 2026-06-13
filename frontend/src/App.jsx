@@ -7,12 +7,15 @@ import Backtester from './components/Backtester';
 import ManualTrade from './components/ManualTrade';
 import ActiveTrades from './components/ActiveTrades';
 import BotStatus from './components/BotStatus';
-import { API_BASE_URL, apiFetch, userId } from './services/api';
+import TerminalSelector from './components/TerminalSelector';
+import { API_BASE_URL, apiFetch, clearSelectedTerminal, getCurrentUserId, getSelectedTerminal } from './services/api';
 
 function App() {
     const [clock, setClock] = useState('');
     const [botOnline, setBotOnline] = useState(false);
     const [apiConnected, setApiConnected] = useState(false);
+    const [selectedTerminal, setSelectedTerminalState] = useState(getSelectedTerminal());
+    const activeUserId = selectedTerminal?.userId || getCurrentUserId();
 
     useEffect(() => {
         const tick = () => {
@@ -43,7 +46,7 @@ function App() {
         // Check bot status
         const checkBot = async () => {
             try {
-                const res = await apiFetch(`${API_BASE_URL}/bot/status`);
+                const res = await apiFetch(`${API_BASE_URL}/bot/status?userId=${encodeURIComponent(getCurrentUserId())}`);
                 const data = await res.json();
                 setBotOnline(data.bot?.isRunning || false);
             } catch { setBotOnline(false); }
@@ -61,8 +64,17 @@ function App() {
         };
     }, []);
 
+    const switchTerminal = () => {
+        clearSelectedTerminal();
+        setSelectedTerminalState(null);
+    };
+
+    if (!selectedTerminal) {
+        return <TerminalSelector onSelect={setSelectedTerminalState} />;
+    }
+
     return (
-        <div className="App">
+        <div className="App" key={activeUserId}>
             <header className="app-header">
                 <div className="header-brand">
                     <div className="header-logo">B</div>
@@ -85,8 +97,9 @@ function App() {
                             {botOnline ? 'BOT LIVE' : 'BOT OFF'}
                         </span>
                     </div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8', minWidth: '140px', textAlign: 'right' }}>
-                        User: {userId.substring(5, 17)}...
+                    <div className="terminal-header-pill">
+                        <span>Terminal: {selectedTerminal.displayName}</span>
+                        <button onClick={switchTerminal}>Switch</button>
                     </div>
                 </div>
             </header>

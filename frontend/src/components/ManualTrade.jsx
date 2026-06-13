@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { manualTrade, userId } from '../services/api';
+import { getSelectedTerminal, manualTrade } from '../services/api';
 
 const ManualTrade = () => {
     const [quantity, setQuantity] = useState(0.01);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
     const [messageType, setMessageType] = useState('');
+    const terminal = getSelectedTerminal();
 
     const handleTrade = async (action) => {
         setLoading(true);
@@ -27,7 +28,7 @@ const ManualTrade = () => {
 
     return (
         <div className="manual-trade-container">
-            <h2>Paper Trade (User: {userId.substring(0, 12)}...)</h2>
+            <h2>Paper Trade ({terminal?.displayName || 'Selected Terminal'})</h2>
             <div className="trade-controls">
                 <div className="input-group">
                     <label>Quantity (BTC)</label>

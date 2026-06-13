@@ -444,7 +444,8 @@ h2::before {
   margin-bottom: 8px;
 }
 
-.trade-controls input {
+.trade-controls input,
+.trade-controls select {
   padding: 12px 16px;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
@@ -456,7 +457,8 @@ h2::before {
   width: 100%;
 }
 
-.trade-controls input:focus {
+.trade-controls input:focus,
+.trade-controls select:focus {
   outline: none;
   border-color: var(--accent-indigo);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
@@ -865,6 +867,7 @@ h2::before {
   .header-right::-webkit-scrollbar { display: none; }
   .header-clock { font-size: 11px; padding: 8px 10px; flex: 0 0 auto; text-align: center; min-height: 36px; }
   .header-status { font-size: 11px; flex: 0 0 auto; justify-content: center; min-height: 36px; padding: 0 10px; border: 1px solid var(--glass-border); border-radius: 999px; background: rgba(5, 5, 5, 0.84); }
+  .terminal-header-pill { flex: 0 0 auto; min-width: auto; justify-content: flex-start; }
   
   main { padding: 16px 16px 40px; }
   .dashboard-grid { gap: 16px; }
@@ -912,12 +915,19 @@ h2::before {
     gap: 16px !important;
     align-items: flex-start !important;
   }
+
+  .terminal-selector-screen { padding: 20px; align-items: flex-start; }
+  .terminal-selector-heading { justify-content: flex-start; margin-bottom: 24px; }
+  .terminal-grid { grid-template-columns: repeat(auto-fit, minmax(138px, 1fr)); gap: 12px; }
+  .terminal-card { min-height: 178px; padding: 16px; }
+  .terminal-avatar { width: 64px; height: 64px; border-radius: 18px; font-size: 28px; }
+  .terminal-selector-footer { flex-direction: column; align-items: flex-start; }
 }
 
 @media (max-width: 480px) {
   .app-header { padding: 10px 16px; }
   .header-title { font-size: 15px; }
-  .header-right > div:last-child { display: none; }
+  .terminal-header-pill span { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   
   main { padding: 12px 12px 30px; }
   .dashboard-grid { gap: 12px; }
@@ -939,6 +949,9 @@ h2::before {
     padding: 14px;
     border-radius: 12px;
   }
+  .terminal-selector-heading { gap: 12px; }
+  .terminal-brand-mark { width: 44px; height: 44px; border-radius: 13px; font-size: 22px; }
+  .terminal-grid { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 380px) {

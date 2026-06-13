@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { formatTimeIST } from '../utils/timeFormatter';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, getCurrentUserId } from '../services/api';
 
 const BotStatus = () => {
     const [status, setStatus] = useState(null);
@@ -24,7 +24,7 @@ const BotStatus = () => {
     useEffect(() => {
         const fetchStatus = async () => {
             try {
-                const response = await axios.get(`${API_BASE_URL}/bot/status`);
+                const response = await axios.get(`${API_BASE_URL}/bot/status`, { params: { userId: getCurrentUserId() } });
                 setStatus(response.data);
                 setLoading(false);
             } catch (error) {

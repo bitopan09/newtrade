@@ -9,6 +9,7 @@ const dotenv = require('dotenv');
 const schedule = require('node-schedule');
 const TradingBot = require('./tradingBot');
 const notificationService = require('./emailService');
+const terminalStore = require('./terminalStore');
 
 dotenv.config();
 
@@ -105,6 +106,9 @@ db.serialize(() => {
     db.run(`CREATE INDEX IF NOT EXISTS idx_trades_user_timestamp ON trades(userId, timestamp)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_prices_timestamp ON prices(timestamp)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_backtest_results_user_timestamp ON backtest_results(userId, timestamp)`);
+    terminalStore.createTerminalTables(db).catch(error => {
+        console.error('Error creating terminal tables:', error.message);
+    });
 
     // Initialize balance for default user if needed
     db.get(`SELECT COUNT(*) as count FROM balance WHERE userId = 'default'`, [], (err, row) => {
@@ -367,30 +371,124 @@ app.get('/api/candles', async (req, res) => {
     }
 });
 
-app.get('/api/balance', (req, res) => {
-    // Get latest balance for user
-    const userId = req.query.userId || 'default';
-    db.get(`SELECT * FROM balance WHERE userId = ? ORDER BY timestamp DESC LIMIT 1`, [userId], (err, row) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
-        // Create default balance for new users
+app.get('/api/terminals', async (req, res) => {
+    try {
+        const includeArchived = String(req.query.includeArchived || 'false').toLowerCase() === 'true';
+        const terminals = await terminalStore.listTerminals(db, includeArchived);
+        res.json(terminals);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/terminals', async (req, res) => {
+    try {
+        const terminal = await terminalStore.createTerminal(db, req.body || {});
+        res.status(201).json(terminal);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.get('/api/terminals/:userId', async (req, res) => {
+    try {
+        const terminal = await terminalStore.getTerminal(db, req.params.userId, true);
+        if (!terminal) return res.status(404).json({ error: 'Terminal not found' });
+        res.json(terminal);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.patch('/api/terminals/:userId', async (req, res) => {
+    try {
+        const terminal = await terminalStore.updateTerminal(db, req.params.userId, req.body || {});
+        res.json(terminal);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/terminals/:userId/select', async (req, res) => {
+    try {
+        const terminal = await terminalStore.selectTerminal(db, req.params.userId);
+        res.json(terminal);
+    } catch (error) {
+        res.status(404).json({ error: error.message });
+    }
+});
+
+app.post('/api/terminals/:userId/archive', async (req, res) => {
+    try {
+        const terminal = await terminalStore.archiveTerminal(db, req.params.userId);
+        res.json(terminal);
+    } catch (error) {
+        res.status(404).json({ error: error.message });
+    }
+});
+
+app.post('/api/terminals/:userId/restore', async (req, res) => {
+    try {
+        const terminal = await terminalStore.restoreTerminal(db, req.params.userId);
+        res.json(terminal);
+    } catch (error) {
+        res.status(404).json({ error: error.message });
+    }
+});
+
+app.get('/api/terminals/:userId/settings', async (req, res) => {
+    try {
+        const settings = await terminalStore.getSettings(db, req.params.userId);
+        res.json(settings);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.patch('/api/terminals/:userId/settings', async (req, res) => {
+    try {
+        const settings = await terminalStore.updateSettings(db, req.params.userId, req.body || {});
+        res.json(settings);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.get('/api/terminals/:userId/activity', async (req, res) => {
+    try {
+        const activity = await terminalStore.getActivity(db, req.params.userId, req.query.limit || 50);
+        res.json(activity.map(row => {
+            try {
+                return { ...row, event: row.eventJson ? JSON.parse(row.eventJson) : {} };
+            } catch (error) {
+                return { ...row, event: {} };
+            }
+        }));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/balance', async (req, res) => {
+    try {
+        const userId = req.query.userId || 'default';
+        await terminalStore.ensureTerminalForUser(db, userId, 'Terminal');
+        let row = await terminalStore.dbGet(db, `SELECT * FROM balance WHERE userId = ? ORDER BY timestamp DESC LIMIT 1`, [userId]);
         if (!row) {
-            db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, 50, 0)`, [userId], function() {
-                res.json({ userId, usd_balance: 50, btc_balance: 0, id: this.lastID });
-            });
-        } else {
-            res.json(row || {});
+            const inserted = await terminalStore.dbRun(db, `INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, 50, 0)`, [userId]);
+            row = { id: inserted.lastID, userId, usd_balance: 50, btc_balance: 0 };
         }
-    });
+        res.json(row);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 app.get('/api/trades', (req, res) => {
-    // Get trade history for user and automated bot
+    // Get trade history for selected terminal only
     const limit = req.query.limit || 50;
     const userId = req.query.userId || 'default';
-    db.all(`SELECT * FROM trades WHERE userId = ? OR userId = 'default' ORDER BY timestamp DESC LIMIT ?`, [userId, limit], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC LIMIT ?`, [userId, limit], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -400,9 +498,9 @@ app.get('/api/trades', (req, res) => {
 });
 
 app.get('/api/trades/active', (req, res) => {
-    // Get active trades for user and automated bot
+    // Get active trades for selected terminal only
     const userId = req.query.userId || 'default';
-    db.all(`SELECT * FROM trades WHERE (userId = ? OR userId = 'default') AND status = 'OPEN' ORDER BY timestamp DESC`, [userId], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE userId = ? AND status = 'OPEN' ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -434,10 +532,16 @@ app.get('/api/signals', (req, res) => {
     });
 });
 
-app.post('/api/trades', (req, res) => {
+app.post('/api/trades', async (req, res) => {
     // Record a new trade for user
     const { action, entry_price, exit_price, quantity, pnl, score, notes, userId } = req.body;
     const user = userId || 'default';
+
+    try {
+        await terminalStore.ensureTerminalForUser(db, user, 'Terminal');
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
 
     db.run(
         `INSERT INTO trades (userId, action, entry_price, exit_price, quantity, pnl, score, notes, trade_type) 
@@ -456,6 +560,7 @@ app.post('/api/trades', (req, res) => {
                         [user, newBalance, balance.btc_balance]);
                 }
             });
+            terminalStore.logActivity(db, user, 'manual_trade_recorded', { action, entry_price, exit_price, quantity, pnl });
             res.json({ id: this.lastID, message: 'Trade recorded successfully' });
         }
     );
@@ -474,12 +579,13 @@ app.post('/api/bot/stop', (req, res) => {
 
 app.get('/api/bot/status', async (req, res) => {
     try {
+        const userId = req.query.userId || 'default';
         const status = tradingBot.getStatus();
         const recentTrades = await tradingBot.getRecentTrades(5);
         
         // Get today's trade if it exists
         const today = new Date().toISOString().split('T')[0];
-        db.get("SELECT * FROM trades WHERE timestamp LIKE ? LIMIT 1", [`${today}%`], (err, row) => {
+        db.get("SELECT * FROM trades WHERE userId = ? AND timestamp LIKE ? LIMIT 1", [userId, `${today}%`], (err, row) => {
             res.json({
                 bot: status,
                 recentTrades: recentTrades,
@@ -498,11 +604,13 @@ app.post('/api/backtest', async (req, res) => {
         const runStrategy = strategy || 'confluence_scoring';
         const runConfig = config || {};
         const user = userId || 'default';
+        await terminalStore.ensureTerminalForUser(db, user, 'Terminal');
         
         console.log(`Running backtest for ${runDays} days using ${runStrategy} strategy...`);
 
         const results = await tradingBot.runBacktest(runDays, runStrategy, runConfig);
         const runId = await saveBacktestResult({ userId: user, days: runDays, strategy: runStrategy, config: runConfig, result: results });
+        await terminalStore.logActivity(db, user, 'backtest_run', { runId, days: runDays, strategy: runStrategy, totalTrades: results.totalTrades, totalReturn: results.totalReturn });
 
         res.json({ ...results, runId, saved: true });
     } catch (error) {
@@ -516,7 +624,7 @@ app.get('/api/backtest/results', (req, res) => {
     db.all(
         `SELECT id, userId, timestamp, days, strategy, data_source, candles_used, total_trades, win_rate, profit_factor, max_drawdown, total_return, final_equity, config_json, summary_json
          FROM backtest_results
-         WHERE userId = ? OR userId = 'default'
+          WHERE userId = ?
          ORDER BY timestamp DESC
          LIMIT ?`,
         [userId, limit],
@@ -528,7 +636,8 @@ app.get('/api/backtest/results', (req, res) => {
 });
 
 app.get('/api/backtest/results/:id', (req, res) => {
-    db.get(`SELECT * FROM backtest_results WHERE id = ?`, [req.params.id], (err, row) => {
+    const userId = req.query.userId || 'default';
+    db.get(`SELECT * FROM backtest_results WHERE id = ? AND userId = ?`, [req.params.id, userId], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!row) return res.status(404).json({ error: 'Backtest result not found' });
         res.json(parseBacktestRow(row));
@@ -536,7 +645,8 @@ app.get('/api/backtest/results/:id', (req, res) => {
 });
 
 app.get('/api/backtest/results/:id/export', (req, res) => {
-    db.get(`SELECT * FROM backtest_results WHERE id = ?`, [req.params.id], (err, row) => {
+    const userId = req.query.userId || 'default';
+    db.get(`SELECT * FROM backtest_results WHERE id = ? AND userId = ?`, [req.params.id, userId], (err, row) => {
         if (err) return res.status(500).send('Error fetching backtest result');
         if (!row) return res.status(404).send('Backtest result not found');
 
@@ -576,6 +686,7 @@ app.post('/api/manual-trade', async (req, res) => {
     try {
         const { action, quantity, userId } = req.body;
         const user = userId || 'default';
+        await terminalStore.ensureTerminalForUser(db, user, 'Terminal');
         
         // Get current price
         db.get('SELECT price FROM prices ORDER BY timestamp DESC LIMIT 1', async (err, row) => {
@@ -587,6 +698,7 @@ app.post('/api/manual-trade', async (req, res) => {
             const result = await tradingBot.executionEngine.executeTrade(signal, quantity || 0.01, user);
             
             if (result.success) {
+                terminalStore.logActivity(db, user, 'manual_trade_opened', { action: signal.action, quantity: result.trade?.quantity, entryPrice: result.trade?.entry_price });
                 res.json(result);
             } else {
                 res.status(400).json(result);
@@ -601,6 +713,7 @@ app.post('/api/manual-trade', async (req, res) => {
 app.post('/api/trades/:id/close', async (req, res) => {
     try {
         const tradeId = parseInt(req.params.id);
+        const userId = req.body.userId || req.query.userId || 'default';
         
         // Get current price
         db.get('SELECT price FROM prices ORDER BY timestamp DESC LIMIT 1', async (err, row) => {
@@ -608,9 +721,10 @@ app.post('/api/trades/:id/close', async (req, res) => {
                 return res.status(500).json({ error: 'Could not get current price' });
             }
             
-            const result = await tradingBot.executionEngine.manualExitTrade(tradeId, row.price);
+            const result = await tradingBot.executionEngine.manualExitTrade(tradeId, row.price, userId);
             
             if (result.success) {
+                terminalStore.logActivity(db, userId, 'manual_trade_closed', { tradeId, pnl: result.pnl, reason: result.reason });
                 res.json(result);
             } else {
                 res.status(400).json(result);
@@ -624,7 +738,7 @@ app.post('/api/trades/:id/close', async (req, res) => {
 // CSV Export endpoint
 app.get('/api/trades/export', (req, res) => {
     const userId = req.query.userId || 'default';
-    db.all(`SELECT * FROM trades WHERE userId = ? OR userId = 'default' ORDER BY timestamp DESC`, [userId], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             return res.status(500).send('Error fetching trades');
         }

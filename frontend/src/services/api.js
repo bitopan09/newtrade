@@ -11,27 +11,79 @@ if (window.location.hostname === 'localhost' || window.location.hostname === '12
     API_BASE_URL = `${window.location.protocol}//${window.location.host}/api`;
 }
 
-// Get or create user session ID
-const getOrCreateUserId = () => {
-    let userId = localStorage.getItem('userId');
+const LEGACY_USER_ID_KEY = 'userId';
+const SELECTED_TERMINAL_ID_KEY = 'selectedTerminalUserId';
+const SELECTED_TERMINAL_KEY = 'selectedTerminal';
+
+// Legacy fallback for users who had the old anonymous single-terminal flow.
+const getOrCreateLegacyUserId = () => {
+    let userId = localStorage.getItem(LEGACY_USER_ID_KEY);
     if (!userId) {
         userId = 'user_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-        localStorage.setItem('userId', userId);
+        localStorage.setItem(LEGACY_USER_ID_KEY, userId);
     }
     return userId;
 };
 
-const userId = getOrCreateUserId();
+export const getCurrentUserId = () => localStorage.getItem(SELECTED_TERMINAL_ID_KEY) || getOrCreateLegacyUserId();
+
+export const getSelectedTerminal = () => {
+    try {
+        const raw = localStorage.getItem(SELECTED_TERMINAL_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch (error) {
+        return null;
+    }
+};
+
+export const setSelectedTerminal = (terminal) => {
+    if (!terminal?.userId) return;
+    localStorage.setItem(SELECTED_TERMINAL_ID_KEY, terminal.userId);
+    localStorage.setItem(SELECTED_TERMINAL_KEY, JSON.stringify(terminal));
+};
+
+export const clearSelectedTerminal = () => {
+    localStorage.removeItem(SELECTED_TERMINAL_ID_KEY);
+    localStorage.removeItem(SELECTED_TERMINAL_KEY);
+};
+
+const userId = getCurrentUserId();
 
 const apiFetch = (url, options = {}) => fetch(url, options);
 
 // Helper function to add user ID to requests
 const withUserId = (data = {}) => ({
     ...data,
-    userId: userId
+    userId: getCurrentUserId()
 });
 
 export { userId, API_BASE_URL, apiFetch };
+
+export const fetchTerminals = async (includeArchived = false) => {
+    const response = await axios.get(`${API_BASE_URL}/terminals`, { params: { includeArchived } });
+    return response.data;
+};
+
+export const createTerminal = async (terminalData) => {
+    const response = await axios.post(`${API_BASE_URL}/terminals`, terminalData);
+    return response.data;
+};
+
+export const selectTerminal = async (terminalUserId) => {
+    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/select`);
+    setSelectedTerminal(response.data);
+    return response.data;
+};
+
+export const archiveTerminal = async (terminalUserId) => {
+    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/archive`);
+    return response.data;
+};
+
+export const restoreTerminal = async (terminalUserId) => {
+    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/restore`);
+    return response.data;
+};
 
 export const fetchPrice = async () => {
     try {
@@ -70,7 +122,7 @@ export const fetchCandles = async (limit = 100, granularity = 21600) => {
 export const fetchBalance = async () => {
     try {
         const response = await axios.get(`${API_BASE_URL}/balance`, {
-            params: { userId }
+            params: { userId: getCurrentUserId() }
         });
         return response.data;
     } catch (error) {
@@ -82,7 +134,7 @@ export const fetchBalance = async () => {
 export const fetchTrades = async (limit = 50) => {
     try {
         const response = await axios.get(`${API_BASE_URL}/trades`, {
-            params: { limit, userId }
+            params: { limit, userId: getCurrentUserId() }
         });
         return response.data;
     } catch (error) {
@@ -94,7 +146,7 @@ export const fetchTrades = async (limit = 50) => {
 export const fetchActiveTrades = async () => {
     try {
         const response = await axios.get(`${API_BASE_URL}/trades/active`, {
-            params: { userId }
+            params: { userId: getCurrentUserId() }
         });
         return response.data;
     } catch (error) {
@@ -123,7 +175,7 @@ export const closeTrade = async (tradeId) => {
     }
 };
 
-export const exportTradesCsvUrl = `${API_BASE_URL}/trades/export?userId=${userId}`;
+export const exportTradesCsvUrl = () => `${API_BASE_URL}/trades/export?userId=${encodeURIComponent(getCurrentUserId())}`;
 
 export const recordTrade = async (tradeData) => {
     try {

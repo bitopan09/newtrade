@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { API_BASE_URL, apiFetch, userId } from '../services/api';
+import { API_BASE_URL, apiFetch, getCurrentUserId } from '../services/api';
 
 const Backtester = () => {
     const [results, setResults] = useState(null);
@@ -45,7 +45,7 @@ const Backtester = () => {
 
     const loadSavedRuns = async () => {
         try {
-            const response = await apiFetch(`${API_BASE_URL}/backtest/results?userId=${encodeURIComponent(userId)}&limit=5`);
+            const response = await apiFetch(`${API_BASE_URL}/backtest/results?userId=${encodeURIComponent(getCurrentUserId())}&limit=5`);
             if (response.ok) {
                 const data = await response.json();
                 setSavedRuns(data || []);
@@ -70,7 +70,7 @@ const Backtester = () => {
                 body: JSON.stringify({
                     days: numberSetting('days', 90),
                     strategy: 'confluence_scoring',
-                    userId: userId,
+                    userId: getCurrentUserId(),
                     config: buildBacktestConfig()
                 })
             });
@@ -232,7 +232,7 @@ const Backtester = () => {
                     {savedRuns.map(run => (
                         <div key={run.id} style={{ display: 'flex', gap: '8px', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', borderTop: '1px solid rgba(148, 163, 184, 0.12)', fontSize: '0.75rem' }}>
                             <span>#{run.id} | {new Date(run.timestamp).toLocaleString()} | {run.total_trades} trades | PF {(run.profit_factor || 0).toFixed(2)} | Return {((run.total_return || 0) * 100).toFixed(2)}%</span>
-                            <a href={`${API_BASE_URL}/backtest/results/${run.id}/export`} style={{ color: '#93c5fd' }}>CSV</a>
+                            <a href={`${API_BASE_URL}/backtest/results/${run.id}/export?userId=${encodeURIComponent(getCurrentUserId())}`} style={{ color: '#93c5fd' }}>CSV</a>
                         </div>
                     ))}
                 </div>

@@ -241,8 +241,8 @@ class ExecutionEngine {
 
         // Update database (log partial trade if desired, or just update quantity)
         this.db.run(
-            `UPDATE trades SET quantity = ? WHERE id = ?`,
-            [trade.quantity, tradeId]
+            `UPDATE trades SET quantity = ? WHERE id = ? AND userId = ?`,
+            [trade.quantity, tradeId, userId]
         );
 
         // Update balance
@@ -292,8 +292,8 @@ class ExecutionEngine {
              status = ?, 
              exit_reason = ?, 
              exit_timestamp = ?
-             WHERE id = ?`,
-            [exitPrice, pnl, 'CLOSED', reason, new Date().toISOString(), tradeId],
+             WHERE id = ? AND userId = ?`,
+            [exitPrice, pnl, 'CLOSED', reason, new Date().toISOString(), tradeId, userId],
             (err) => {
                 if (err) {
                     console.error('Error updating trade in database:', err);
@@ -380,13 +380,21 @@ class ExecutionEngine {
      * @param {number} exitPrice - Current market price
      * @returns {Promise<Object>} Closure result
      */
-    async manualExitTrade(tradeId, exitPrice) {
+    async manualExitTrade(tradeId, exitPrice, userId = 'default') {
+        if (this.activeTrades.has(tradeId)) {
+            const trade = this.activeTrades.get(tradeId);
+            if (trade.userId !== userId) {
+                return { success: false, reason: 'Trade not found for this terminal' };
+            }
+            return this._closeTrade(tradeId, exitPrice, 'Manual Exit');
+        }
+
         if (!this.activeTrades.has(tradeId)) {
             // Fallback: Check database if not in memory
             return new Promise((resolve) => {
-                this.db.get("SELECT * FROM trades WHERE id = ? AND status = 'OPEN'", [tradeId], (err, row) => {
+                this.db.get("SELECT * FROM trades WHERE id = ? AND userId = ? AND status = 'OPEN'", [tradeId, userId], (err, row) => {
                     if (err || !row) {
-                        resolve({ success: false, reason: 'Trade not found or already closed' });
+                        resolve({ success: false, reason: 'Trade not found for this terminal or already closed' });
                     } else {
                         // Add to memory temporarily to use _closeTrade logic
                         const trade = {
@@ -399,7 +407,6 @@ class ExecutionEngine {
                 });
             });
         }
-        return this._closeTrade(tradeId, exitPrice, 'Manual Exit');
     }
 }
 
