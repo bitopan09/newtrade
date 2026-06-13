@@ -1,47 +1,82 @@
-import React, { useEffect, useState } from 'react';
-import { createPriceWebSocket, fetchCandles } from '../services/api';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+    CandlestickSeries,
+    CrosshairMode,
+    LineStyle,
+    createChart,
+    createSeriesMarkers
+} from 'lightweight-charts';
+import { createPriceWebSocket, fetchActiveTrades, fetchCandles } from '../services/api';
 
-const CHART_WIDTH = 1200;
-const CHART_HEIGHT = 560;
-const PADDING = { top: 38, right: 96, bottom: 42, left: 8 };
-const CANDLE_GRANULARITY_SECONDS = 60;
+const CANDLE_LIMITS = {
+    desktop: 220,
+    tablet: 160,
+    mobile: 96,
+    small: 72
+};
+
+const TIMEFRAMES = [
+    { label: '1m', granularity: 60 },
+    { label: '5m', granularity: 300 },
+    { label: '15m', granularity: 900 },
+    { label: '1h', granularity: 3600 },
+    { label: '6h', granularity: 21600 }
+];
 
 const getChartProfile = () => {
-    if (typeof window === 'undefined') return { candleLimit: 140, compact: false };
-    if (window.innerWidth <= 420) return { candleLimit: 56, compact: true };
-    if (window.innerWidth <= 768) return { candleLimit: 72, compact: true };
-    if (window.innerWidth <= 1024) return { candleLimit: 96, compact: false };
-    return { candleLimit: 140, compact: false };
+    if (typeof window === 'undefined') return { candleLimit: CANDLE_LIMITS.desktop, compact: false };
+    if (window.innerWidth <= 420) return { candleLimit: CANDLE_LIMITS.small, compact: true };
+    if (window.innerWidth <= 768) return { candleLimit: CANDLE_LIMITS.mobile, compact: true };
+    if (window.innerWidth <= 1024) return { candleLimit: CANDLE_LIMITS.tablet, compact: false };
+    return { candleLimit: CANDLE_LIMITS.desktop, compact: false };
 };
 
 const formatPrice = (value) => `$${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+const formatTime = (time) => {
+    if (!time) return '...';
+    return new Date(Number(time) * 1000).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+};
+
+const toChartCandle = (candle) => ({
+    time: Math.floor(new Date(candle.timestamp).getTime() / 1000),
+    open: Number(candle.open),
+    high: Number(candle.high),
+    low: Number(candle.low),
+    close: Number(candle.close)
+});
 
 const LiveChart = () => {
-    const [candles, setCandles] = useState([]);
-    const [hovered, setHovered] = useState(null);
-    const [error, setError] = useState('');
-    const [chartProfile, setChartProfile] = useState(getChartProfile);
-    const candleLimit = chartProfile.candleLimit;
-    const compactChart = chartProfile.compact;
+    const containerRef = useRef(null);
+    const chartRef = useRef(null);
+    const seriesRef = useRef(null);
+    const markersRef = useRef(null);
+    const dataRef = useRef([]);
+    const priceLinesRef = useRef([]);
+    const followLiveRef = useRef(true);
+    const latestCandleRef = useRef(null);
 
-    const loadCandles = async () => {
-        try {
-            const data = await fetchCandles(candleLimit, CANDLE_GRANULARITY_SECONDS);
-            setCandles((data.candles || []).map(candle => ({
-                ...candle,
-                timestamp: new Date(candle.timestamp),
-                open: Number(candle.open),
-                high: Number(candle.high),
-                low: Number(candle.low),
-                close: Number(candle.close),
-                volume: Number(candle.volume)
-            })));
-            setError('');
-        } catch (loadError) {
-            console.error('Error fetching real candle data:', loadError);
-            setError('Could not load real Coinbase candles');
-        }
-    };
+    const [timeframe, setTimeframe] = useState('1m');
+    const [chartProfile, setChartProfile] = useState(getChartProfile);
+    const [followLive, setFollowLive] = useState(true);
+    const [ohlc, setOhlc] = useState(null);
+    const [activeTrades, setActiveTrades] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    const selectedTimeframe = useMemo(
+        () => TIMEFRAMES.find(item => item.label === timeframe) || TIMEFRAMES[0],
+        [timeframe]
+    );
+
+    useEffect(() => {
+        followLiveRef.current = followLive;
+    }, [followLive]);
 
     useEffect(() => {
         const handleResize = () => {
@@ -52,193 +87,307 @@ const LiveChart = () => {
         };
 
         window.addEventListener('resize', handleResize);
-
         return () => window.removeEventListener('resize', handleResize);
     }, []);
+
+    useEffect(() => {
+        if (!containerRef.current) return;
+
+        const chart = createChart(containerRef.current, {
+            autoSize: true,
+            layout: {
+                background: { color: 'transparent' },
+                textColor: '#cbd5e1',
+                fontFamily: 'JetBrains Mono, monospace'
+            },
+            grid: {
+                vertLines: { color: 'rgba(148, 163, 184, 0.10)' },
+                horzLines: { color: 'rgba(148, 163, 184, 0.10)' }
+            },
+            rightPriceScale: {
+                borderColor: 'rgba(148, 163, 184, 0.18)',
+                scaleMargins: { top: 0.12, bottom: 0.12 }
+            },
+            timeScale: {
+                borderColor: 'rgba(148, 163, 184, 0.18)',
+                timeVisible: true,
+                secondsVisible: false,
+                rightOffset: 8,
+                barSpacing: chartProfile.compact ? 7 : 8,
+                fixLeftEdge: false,
+                fixRightEdge: false
+            },
+            crosshair: {
+                mode: CrosshairMode.Normal,
+                vertLine: {
+                    color: 'rgba(47, 107, 255, 0.55)',
+                    style: LineStyle.Dashed,
+                    width: 1,
+                    labelBackgroundColor: '#2f6bff'
+                },
+                horzLine: {
+                    color: 'rgba(47, 107, 255, 0.55)',
+                    style: LineStyle.Dashed,
+                    width: 1,
+                    labelBackgroundColor: '#2f6bff'
+                }
+            },
+            handleScroll: {
+                mouseWheel: true,
+                pressedMouseMove: true,
+                horzTouchDrag: true,
+                vertTouchDrag: false
+            },
+            handleScale: {
+                axisPressedMouseMove: true,
+                mouseWheel: true,
+                pinch: true
+            },
+            localization: {
+                priceFormatter: price => formatPrice(price)
+            }
+        });
+
+        const series = chart.addSeries(CandlestickSeries, {
+            upColor: '#050505',
+            downColor: '#f8fafc',
+            borderUpColor: '#2f6bff',
+            borderDownColor: '#f8fafc',
+            wickUpColor: '#2f6bff',
+            wickDownColor: '#f8fafc',
+            priceLineColor: 'rgba(248, 250, 252, 0.80)',
+            priceLineStyle: LineStyle.Dotted,
+            lastValueVisible: true,
+            priceLineVisible: true
+        });
+
+        chartRef.current = chart;
+        seriesRef.current = series;
+        markersRef.current = createSeriesMarkers(series, []);
+
+        const handleCrosshair = (param) => {
+            if (!param?.time || !seriesRef.current) {
+                setOhlc(latestCandleRef.current);
+                return;
+            }
+
+            const data = param.seriesData.get(seriesRef.current);
+            if (data?.open !== undefined) {
+                setOhlc({ time: param.time, open: data.open, high: data.high, low: data.low, close: data.close });
+            }
+        };
+
+        chart.subscribeCrosshairMove(handleCrosshair);
+
+        return () => {
+            chart.unsubscribeCrosshairMove(handleCrosshair);
+            chart.remove();
+            chartRef.current = null;
+            seriesRef.current = null;
+            markersRef.current = null;
+            priceLinesRef.current = [];
+        };
+    }, []);
+
+    useEffect(() => {
+        chartRef.current?.applyOptions({
+            timeScale: {
+                barSpacing: chartProfile.compact ? 7 : 8
+            }
+        });
+    }, [chartProfile.compact]);
+
+    const loadCandles = useCallback(async () => {
+        try {
+            setLoading(true);
+            const data = await fetchCandles(chartProfile.candleLimit, selectedTimeframe.granularity);
+            const chartData = (data.candles || []).map(toChartCandle).filter(candle => Number.isFinite(candle.close));
+
+            dataRef.current = chartData;
+            seriesRef.current?.setData(chartData);
+
+            const latest = chartData[chartData.length - 1] || null;
+            latestCandleRef.current = latest;
+            setOhlc(latest);
+            setError('');
+
+            if (followLiveRef.current) {
+                chartRef.current?.timeScale().scrollToRealTime();
+            }
+        } catch (loadError) {
+            console.error('Error fetching real candle data:', loadError);
+            setError('Could not load real Coinbase candles');
+        } finally {
+            setLoading(false);
+        }
+    }, [chartProfile.candleLimit, selectedTimeframe.granularity]);
 
     useEffect(() => {
         loadCandles();
         const refresh = setInterval(loadCandles, 60000);
 
+        return () => clearInterval(refresh);
+    }, [loadCandles]);
+
+    useEffect(() => {
         const socket = createPriceWebSocket((msg) => {
             const payload = msg.type === 'price' ? msg.data : msg;
             const price = Number(payload?.price);
             if (!Number.isFinite(price)) return;
 
-            const tickTime = new Date(payload.timestamp || Date.now());
-            setCandles(prev => {
-                if (prev.length === 0) return prev;
+            const candles = dataRef.current;
+            const last = candles[candles.length - 1];
+            if (!last) return;
 
-                const last = prev[prev.length - 1];
-                const lastStart = last.timestamp.getTime();
-                const nextStart = lastStart + CANDLE_GRANULARITY_SECONDS * 1000;
+            const tickTime = Math.floor(new Date(payload.timestamp || Date.now()).getTime() / 1000);
+            const nextStart = last.time + selectedTimeframe.granularity;
 
-                if (tickTime.getTime() >= nextStart) {
-                    loadCandles();
-                    return prev;
-                }
+            if (tickTime >= nextStart) {
+                loadCandles();
+                return;
+            }
 
-                const updated = {
-                    ...last,
-                    close: price,
-                    high: Math.max(last.high, price),
-                    low: Math.min(last.low, price),
-                    timestamp: last.timestamp
-                };
+            const updated = {
+                ...last,
+                close: price,
+                high: Math.max(last.high, price),
+                low: Math.min(last.low, price)
+            };
 
-                return [...prev.slice(0, -1), updated];
-            });
+            dataRef.current = [...candles.slice(0, -1), updated];
+            latestCandleRef.current = updated;
+            setOhlc(updated);
+            seriesRef.current?.update(updated);
+
+            if (followLiveRef.current) {
+                chartRef.current?.timeScale().scrollToRealTime();
+            }
         });
 
-        return () => {
-            clearInterval(refresh);
-            socket.close();
+        return () => socket.close();
+    }, [loadCandles, selectedTimeframe.granularity]);
+
+    useEffect(() => {
+        const loadTrades = async () => {
+            try {
+                const trades = await fetchActiveTrades();
+                setActiveTrades(Array.isArray(trades) ? trades : []);
+            } catch (tradeError) {
+                console.error('Failed to load active chart overlays:', tradeError);
+            }
         };
-    }, [candleLimit]);
 
-    const latest = candles[candles.length - 1];
-    const hoveredCandle = hovered?.candle || null;
-    const rawMinLow = candles.length ? Math.min(...candles.map(candle => candle.low)) : 0;
-    const rawMaxHigh = candles.length ? Math.max(...candles.map(candle => candle.high)) : 1;
-    const rawRange = Math.max(rawMaxHigh - rawMinLow, 1);
-    const minLow = rawMinLow - rawRange * 0.08;
-    const maxHigh = rawMaxHigh + rawRange * 0.08;
-    const priceRange = Math.max(maxHigh - minLow, 1);
-    const innerWidth = CHART_WIDTH - PADDING.left - PADDING.right;
-    const innerHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
-    const candleSlot = candles.length > 1 ? innerWidth / candles.length : innerWidth;
-    const candleWidth = Math.max(3.5, Math.min(10, candleSlot * 0.58));
+        loadTrades();
+        const interval = setInterval(loadTrades, 5000);
+        return () => clearInterval(interval);
+    }, []);
 
-    const yFor = (price) => PADDING.top + ((maxHigh - price) / priceRange) * innerHeight;
-    const xFor = (index) => PADDING.left + (index * candleSlot) + candleSlot / 2;
-    const levelCount = compactChart ? 6 : 10;
-    const verticalCount = compactChart ? 10 : 19;
-    const levels = Array.from({ length: levelCount }, (_, index) => maxHigh - priceRange * (index / (levelCount - 1)));
-    const verticalGrid = Array.from({ length: verticalCount }, (_, index) => PADDING.left + innerWidth * (index / (verticalCount - 1)));
-    const latestY = latest ? yFor(latest.close) : null;
-    const latestX = candles.length ? xFor(candles.length - 1) : null;
-    const hoveredX = hovered ? xFor(hovered.index) : null;
-    const hoveredY = hoveredCandle ? yFor(hoveredCandle.close) : null;
-    const plotRight = CHART_WIDTH - PADDING.right;
-    const plotBottom = CHART_HEIGHT - PADDING.bottom;
+    useEffect(() => {
+        const series = seriesRef.current;
+        if (!series) return;
+
+        priceLinesRef.current.forEach(line => series.removePriceLine(line));
+        priceLinesRef.current = [];
+
+        const addPriceLine = (price, color, title, style = LineStyle.Dashed) => {
+            const number = Number(price);
+            if (!Number.isFinite(number)) return;
+
+            priceLinesRef.current.push(series.createPriceLine({
+                price: number,
+                color,
+                lineWidth: 1,
+                lineStyle: style,
+                axisLabelVisible: true,
+                title
+            }));
+        };
+
+        const markerTime = latestCandleRef.current?.time || dataRef.current[dataRef.current.length - 1]?.time;
+        const markers = [];
+
+        activeTrades.forEach(trade => {
+            const action = String(trade.action || '').toUpperCase();
+            const isBuy = action === 'BUY';
+
+            addPriceLine(trade.entry_price, isBuy ? '#2f6bff' : '#f8fafc', `${action || 'TRADE'} ENTRY`, LineStyle.Solid);
+            addPriceLine(trade.sl, '#ef4444', 'SL', LineStyle.Dashed);
+            addPriceLine(trade.tp1, '#10b981', 'TP1', LineStyle.Dotted);
+            addPriceLine(trade.tp2, '#22c55e', 'TP2', LineStyle.Dashed);
+
+            if (markerTime) {
+                markers.push({
+                    time: markerTime,
+                    position: isBuy ? 'belowBar' : 'aboveBar',
+                    color: isBuy ? '#2f6bff' : '#f8fafc',
+                    shape: isBuy ? 'arrowUp' : 'arrowDown',
+                    text: `${action || 'TRADE'} ${trade.quantity || 0.01} BTC`
+                });
+            }
+        });
+
+        markersRef.current?.setMarkers(markers);
+    }, [activeTrades, ohlc]);
+
+    const resetChart = () => {
+        chartRef.current?.timeScale().fitContent();
+    };
+
+    const toggleFollowLive = () => {
+        setFollowLive(prev => {
+            const next = !prev;
+            if (next) chartRef.current?.timeScale().scrollToRealTime();
+            return next;
+        });
+    };
+
+    const displayedOhlc = ohlc || latestCandleRef.current;
 
     return (
         <div className="chart-container">
             <div className="live-chart-header">
-                <h2 style={{ marginBottom: 0 }}>BTC/USD 1m</h2>
-                <div className="live-chart-source">
-                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 10px #22c55e' }} />
-                    <span>{compactChart ? 'Coinbase 1m' : 'Coinbase Live OHLC'}</span>
+                <div>
+                    <h2 style={{ marginBottom: 0 }}>BTC/USD {timeframe}</h2>
+                    <div className="live-chart-source">
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 10px #22c55e' }} />
+                        <span>{chartProfile.compact ? 'Coinbase live' : 'Coinbase Live OHLC'}</span>
+                    </div>
+                </div>
+
+                <div className="chart-toolbar">
+                    <div className="timeframe-tabs">
+                        {TIMEFRAMES.map(item => (
+                            <button
+                                key={item.label}
+                                className={item.label === timeframe ? 'active' : ''}
+                                onClick={() => setTimeframe(item.label)}
+                            >
+                                {item.label}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="chart-actions">
+                        <button className={followLive ? 'active' : ''} onClick={toggleFollowLive}>{followLive ? 'Live On' : 'Live Off'}</button>
+                        <button onClick={resetChart}>Reset</button>
+                    </div>
                 </div>
             </div>
-            <div className="live-chart-wrap">
-                <svg className="live-chart-svg" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} width="100%" role="img" aria-label="Live Coinbase BTC/USD candlestick chart">
-                    <rect x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} fill="transparent" />
-                    <rect x={PADDING.left} y={PADDING.top} width={innerWidth} height={innerHeight} fill="rgba(2,6,23,0.14)" stroke="rgba(148,163,184,0.16)" />
 
-                    {verticalGrid.map((x, index) => (
-                        <line
-                            key={`v-${x}`}
-                            x1={x}
-                            y1={PADDING.top}
-                            x2={x}
-                            y2={plotBottom}
-                            stroke={index % 5 === 0 ? 'rgba(148,163,184,0.24)' : 'rgba(148,163,184,0.10)'}
-                            strokeWidth={index % 5 === 0 ? '1.15' : '0.75'}
-                        />
-                    ))}
-
-                    {levels.map((level, index) => {
-                        const y = yFor(level);
-                        return (
-                            <g key={level}>
-                                <line
-                                    x1={PADDING.left}
-                                    y1={y}
-                                    x2={plotRight}
-                                    y2={y}
-                                    stroke={index % 5 === 0 ? 'rgba(148,163,184,0.24)' : 'rgba(148,163,184,0.10)'}
-                                    strokeWidth={index % 5 === 0 ? '1.15' : '0.75'}
-                                />
-                                <text x={plotRight + 10} y={y + 4} fill="rgba(226,232,240,0.78)" fontSize={compactChart ? '11' : '12'} fontFamily="JetBrains Mono, monospace">
-                                    {formatPrice(level)}
-                                </text>
-                            </g>
-                        );
-                    })}
-
-                    {candles.map((candle, index) => {
-                        const bullish = candle.close >= candle.open;
-                        const candleColor = bullish ? '#2f6bff' : '#f8fafc';
-                        const x = xFor(index);
-                        const openY = yFor(candle.open);
-                        const closeY = yFor(candle.close);
-                        const highY = yFor(candle.high);
-                        const lowY = yFor(candle.low);
-                        const bodyTop = Math.min(openY, closeY);
-                        const bodyHeight = Math.max(Math.abs(closeY - openY), 1.5);
-
-                        return (
-                            <g key={`${candle.timestamp.toISOString()}-${index}`} onMouseEnter={() => setHovered({ candle, index })} onMouseLeave={() => setHovered(null)}>
-                                <line x1={x} y1={highY} x2={x} y2={lowY} stroke={candleColor} strokeWidth="1.6" />
-                                <rect
-                                    x={x - candleWidth / 2}
-                                    y={bodyTop}
-                                    width={candleWidth}
-                                    height={bodyHeight}
-                                    fill={bullish ? '#050505' : '#f8fafc'}
-                                    stroke={candleColor}
-                                    strokeWidth="1.6"
-                                />
-                            </g>
-                        );
-                    })}
-
-                    {latest && latestY !== null && latestX !== null && (
-                        <>
-                            <line x1={PADDING.left} y1={latestY} x2={plotRight} y2={latestY} stroke="rgba(255,255,255,0.74)" strokeDasharray="1 6" strokeLinecap="round" strokeWidth="1.4" />
-                            <line x1={latestX} y1={PADDING.top} x2={latestX} y2={plotBottom} stroke="rgba(255,255,255,0.55)" strokeDasharray="7 8" strokeWidth="1.15" />
-                            <rect x={plotRight + 6} y={latestY - 13} width="84" height="26" fill="rgba(15,23,42,0.96)" stroke="rgba(255,255,255,0.26)" />
-                            <text x={plotRight + 12} y={latestY + 4} fill="#f8fafc" fontSize={compactChart ? '11' : '12'} fontFamily="JetBrains Mono, monospace">
-                                {formatPrice(latest.close)}
-                            </text>
-                            <text x={PADDING.left + 6} y={CHART_HEIGHT - 10} fill="rgba(220,220,220,0.64)" fontSize="12" fontFamily="JetBrains Mono, monospace">
-                                {candles[0]?.timestamp.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} IST
-                            </text>
-                            <text x={plotRight - 132} y={CHART_HEIGHT - 10} fill="rgba(220,220,220,0.64)" fontSize="12" fontFamily="JetBrains Mono, monospace">
-                                {latest.timestamp.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} IST
-                            </text>
-                        </>
-                    )}
-
-                    {hoveredCandle && hoveredX !== null && hoveredY !== null && (
-                        <>
-                            <line x1={hoveredX} y1={PADDING.top} x2={hoveredX} y2={plotBottom} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 5" strokeWidth="1" />
-                            <line x1={PADDING.left} y1={hoveredY} x2={plotRight} y2={hoveredY} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 5" strokeWidth="1" />
-                            {!compactChart && (
-                                <>
-                                    <rect x={PADDING.left + 10} y="8" width="456" height="24" fill="rgba(2,6,23,0.82)" stroke="rgba(59,130,246,0.35)" />
-                                    <text x={PADDING.left + 18} y="24" fill="#e2e8f0" fontSize="12" fontFamily="JetBrains Mono, monospace">
-                                        {hoveredCandle.timestamp.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} IST  O {formatPrice(hoveredCandle.open)}  H {formatPrice(hoveredCandle.high)}  L {formatPrice(hoveredCandle.low)}  C {formatPrice(hoveredCandle.close)}
-                                    </text>
-                                </>
-                            )}
-                        </>
-                    )}
-                </svg>
+            <div className="ohlc-strip">
+                <span>{loading ? 'Loading real candles...' : formatTime(displayedOhlc?.time)} IST</span>
+                <span>O <strong>{formatPrice(displayedOhlc?.open)}</strong></span>
+                <span>H <strong>{formatPrice(displayedOhlc?.high)}</strong></span>
+                <span>L <strong>{formatPrice(displayedOhlc?.low)}</strong></span>
+                <span>C <strong>{formatPrice(displayedOhlc?.close)}</strong></span>
+                {activeTrades.length > 0 && <span className="chart-overlay-pill">{activeTrades.length} active overlay{activeTrades.length === 1 ? '' : 's'}</span>}
             </div>
 
-            {hoveredCandle && (
-                <div className="chart-info" style={{ marginTop: 0 }}>
-                    <p><strong>{hoveredCandle.timestamp.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST</strong></p>
-                    <p>O {formatPrice(hoveredCandle.open)} | H {formatPrice(hoveredCandle.high)} | L {formatPrice(hoveredCandle.low)} | C {formatPrice(hoveredCandle.close)}</p>
-                </div>
-            )}
+            <div ref={containerRef} className="live-chart-wrap" />
 
             <div className="chart-info">
-                <p>Current Price: {latest ? formatPrice(latest.close) : 'Loading real Coinbase candles...'}</p>
-                <p>Last candle: {latest ? latest.timestamp.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '...'}</p>
-                <p>Source: Coinbase BTC-USD 1-minute OHLC candles | Candles: {candles.length}</p>
+                <p>Current Price: {formatPrice(latestCandleRef.current?.close)}</p>
+                <p>Timeframe: {timeframe} candles</p>
+                <p>Interactive: pan, zoom, pinch, crosshair</p>
                 {error && <p style={{ color: '#f87171' }}>{error}</p>}
             </div>
         </div>

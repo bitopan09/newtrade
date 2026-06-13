@@ -8,7 +8,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           react: ['react', 'react-dom'],
-          charts: ['recharts'],
+          charts: ['recharts', 'lightweight-charts'],
           http: ['axios']
         }
       }

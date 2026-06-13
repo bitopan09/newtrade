@@ -275,6 +275,100 @@ h2::before {
 }
 
 /* ===== CHART ===== */
+.live-chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.live-chart-source {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.chart-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.timeframe-tabs,
+.chart-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: rgba(5, 5, 5, 0.78);
+}
+
+.timeframe-tabs button,
+.chart-actions button {
+  min-height: 30px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.timeframe-tabs button:hover,
+.chart-actions button:hover,
+.timeframe-tabs button.active,
+.chart-actions button.active {
+  color: #f8fafc;
+  background: rgba(47, 107, 255, 0.26);
+  box-shadow: inset 0 0 0 1px rgba(47, 107, 255, 0.35);
+}
+
+.ohlc-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.ohlc-strip strong {
+  color: var(--text-primary);
+}
+
+.chart-overlay-pill {
+  padding: 2px 8px;
+  border: 1px solid rgba(47, 107, 255, 0.42);
+  border-radius: 999px;
+  color: #bfdbfe;
+  background: rgba(47, 107, 255, 0.12);
+}
+
+.live-chart-wrap {
+  width: 100%;
+  height: 560px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.35);
+  touch-action: none;
+}
+
 .chart-info {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -741,7 +835,7 @@ h2::before {
   .status-grid { grid-template-columns: 1fr; }
   .balance-details { grid-template-columns: 1fr 1fr; }
   .results-grid { grid-template-columns: repeat(2, 1fr); }
-  .live-chart-svg { height: 440px; }
+  .live-chart-wrap { height: 440px; }
 }
 
 @media (max-width: 768px) {
@@ -775,7 +869,9 @@ h2::before {
   main { padding: 16px 16px 40px; }
   .dashboard-grid { gap: 16px; }
   .live-chart-header { align-items: flex-start; flex-direction: column; gap: 8px; }
-  .live-chart-svg { height: 360px; }
+  .chart-toolbar { width: 100%; justify-content: flex-start; }
+  .timeframe-tabs, .chart-actions { overflow-x: auto; max-width: 100%; }
+  .live-chart-wrap { height: 360px; }
   .live-chart-source { font-size: 0.68rem; }
   
   .balance-details { grid-template-columns: 1fr; }
@@ -825,8 +921,9 @@ h2::before {
   
   main { padding: 12px 12px 30px; }
   .dashboard-grid { gap: 12px; }
-  .live-chart-svg { height: 300px; }
+  .live-chart-wrap { height: 300px; }
   .live-chart-source span:last-child { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+  .ohlc-strip { font-size: 11px; gap: 6px 10px; }
   
   .balance-item p { font-size: 18px; }
   
@@ -846,7 +943,7 @@ h2::before {
 
 @media (max-width: 380px) {
   main { padding: 10px 8px 28px; }
-  .live-chart-svg { height: 260px; }
+  .live-chart-wrap { height: 260px; }
   .chart-container, .balance-container, .journal-container,
   .backtester-container, .manual-trade-container,
   .active-trades-container, .bot-status-container {
