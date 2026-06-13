@@ -31,6 +31,38 @@ class TelegramNotificationService {
         console.error(this.lastError);
     }
 
+    _escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    _formatMoney(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? `$${number.toFixed(2)}` : 'N/A';
+    }
+
+    _formatTime(value = Date.now()) {
+        return new Date(value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    }
+
+    _actionEmoji(action) {
+        if (action === 'BUY') return '🟢';
+        if (action === 'SELL') return '🔴';
+        return '⚪';
+    }
+
+    _severityEmoji(severity) {
+        return {
+            INFO: 'ℹ️',
+            WARNING: '⚠️',
+            ERROR: '🚨'
+        }[severity] || '📢';
+    }
+
     init() {
         const { token, chatId } = this._getConfig();
 
@@ -123,7 +155,7 @@ class TelegramNotificationService {
         };
     }
 
-    async sendMessage(message) {
+    async sendMessage(message, options = {}) {
         if (!this.initialized) {
             console.warn('Telegram notification service not initialized. Skipping message.');
             return false;
@@ -134,6 +166,7 @@ class TelegramNotificationService {
             await this._telegramRequest('sendMessage', {
                 chat_id: chatId,
                 text: message,
+                parse_mode: options.parseMode || 'HTML',
                 disable_web_page_preview: true
             });
             this.lastError = null;
@@ -145,42 +178,55 @@ class TelegramNotificationService {
     }
 
     async sendTradeNotification(trade, tradeType = 'TRADE') {
-        const action = trade.action || tradeType || 'TRADE';
-        const entry = Number.isFinite(Number(trade.entry_price)) ? `$${Number(trade.entry_price).toFixed(2)}` : 'N/A';
-        const sl = Number.isFinite(Number(trade.sl)) ? `$${Number(trade.sl).toFixed(2)}` : 'N/A';
-        const tp1 = Number.isFinite(Number(trade.tp1)) ? `$${Number(trade.tp1).toFixed(2)}` : 'N/A';
-        const tp2 = Number.isFinite(Number(trade.tp2)) ? `$${Number(trade.tp2).toFixed(2)}` : 'N/A';
+        const action = this._escapeHtml(trade.action || tradeType || 'TRADE');
         const score = trade.score ? `${trade.score}/10` : 'N/A';
+        const actionEmoji = this._actionEmoji(trade.action);
+        const title = tradeType.includes('AUTO') ? '🚀 Auto Paper Trade Opened' : '📌 Trading Bot Alert';
 
         return this.sendMessage([
-            `Trading Bot Alert: ${tradeType}`,
-            `Action: ${action}`,
-            `Entry: ${entry}`,
-            `Quantity: ${trade.quantity || 0.01} BTC`,
-            `SL: ${sl}`,
-            `TP1: ${tp1}`,
-            `TP2: ${tp2}`,
-            `Score: ${score}`,
-            `Time: ${new Date(trade.timestamp || Date.now()).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`
+            `<b>${title}</b>`,
+            '━━━━━━━━━━━━━━━━━━━━',
+            `${actionEmoji} <b>Action:</b> <code>${action}</code>`,
+            `💰 <b>Entry:</b> <code>${this._formatMoney(trade.entry_price)}</code>`,
+            `📦 <b>Lot:</b> <code>${trade.quantity || 0.01} BTC</code>`,
+            `🛑 <b>Stop Loss:</b> <code>${this._formatMoney(trade.sl)}</code>`,
+            `🎯 <b>Partial TP:</b> <code>${this._formatMoney(trade.tp1)}</code>`,
+            `🏁 <b>Final TP:</b> <code>${this._formatMoney(trade.tp2)}</code>`,
+            `⭐ <b>Confluence:</b> <code>${score}</code>`,
+            '━━━━━━━━━━━━━━━━━━━━',
+            `🕒 <b>Time:</b> ${this._escapeHtml(this._formatTime(trade.timestamp || Date.now()))} IST`
         ].join('\n'));
     }
 
     async sendDailySummary(summary) {
+        const totalPnl = Number(summary.totalPnL || 0);
+        const pnlEmoji = totalPnl >= 0 ? '🟢' : '🔴';
+
         return this.sendMessage([
-            'Trading Bot Daily Summary',
-            `Trades: ${summary.tradesExecuted || 0}`,
-            `Wins: ${summary.winningTrades || 0}`,
-            `Losses: ${summary.losingTrades || 0}`,
-            `Total PnL: $${Number(summary.totalPnL || 0).toFixed(2)}`,
-            `Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`
+            '<b>📊 Daily Trading Summary</b>',
+            '━━━━━━━━━━━━━━━━━━━━',
+            `📈 <b>Total Trades:</b> <code>${summary.tradesExecuted || 0}</code>`,
+            `✅ <b>Wins:</b> <code>${summary.winningTrades || 0}</code>`,
+            `❌ <b>Losses:</b> <code>${summary.losingTrades || 0}</code>`,
+            `${pnlEmoji} <b>Total PnL:</b> <code>${this._formatMoney(totalPnl)}</code>`,
+            '━━━━━━━━━━━━━━━━━━━━',
+            `🕒 <b>Time:</b> ${this._escapeHtml(this._formatTime())} IST`
         ].join('\n'));
     }
 
     async sendAlert(title, message, severity = 'INFO') {
+        const emoji = this._severityEmoji(severity);
+        const safeTitle = this._escapeHtml(title);
+        const safeMessage = this._escapeHtml(message);
+
         return this.sendMessage([
-            `Trading Bot ${severity}: ${title}`,
-            message,
-            `Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`
+            `<b>${emoji} Trading Bot ${this._escapeHtml(severity)}</b>`,
+            '━━━━━━━━━━━━━━━━━━━━',
+            `📌 <b>${safeTitle}</b>`,
+            '',
+            safeMessage,
+            '━━━━━━━━━━━━━━━━━━━━',
+            `🕒 <b>Time:</b> ${this._escapeHtml(this._formatTime())} IST`
         ].join('\n'));
     }
 }
