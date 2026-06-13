@@ -186,7 +186,7 @@ const Backtester = () => {
                 <strong>⚡ Dynamic Lot:</strong> 0.01 – 0.04 BTC (risk-based, skipped if risk is too high)
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', marginBottom: '12px', padding: '10px', border: '1px solid rgba(148, 163, 184, 0.18)', borderRadius: '8px', background: 'rgba(15, 23, 42, 0.45)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', marginBottom: '12px', padding: '10px', border: '1px solid rgba(148, 163, 184, 0.18)', borderRadius: '8px', background: 'rgba(5, 5, 5, 0.86)' }}>
                 {[
                     ['days', 'Days', 30, 365, 1],
                     ['riskPercentage', 'Risk %', 0.25, 5, 0.25],
@@ -227,7 +227,7 @@ const Backtester = () => {
             </div>
 
             {savedRuns.length > 0 && (
-                <div style={{ marginTop: '12px', padding: '10px', border: '1px solid rgba(148, 163, 184, 0.18)', borderRadius: '8px', background: 'rgba(15, 23, 42, 0.35)', color: '#cbd5e0' }}>
+                <div style={{ marginTop: '12px', padding: '10px', border: '1px solid rgba(148, 163, 184, 0.18)', borderRadius: '8px', background: 'rgba(5, 5, 5, 0.82)', color: '#cbd5e0' }}>
                     <h4 style={{ margin: '0 0 8px 0', color: '#e2e8f0' }}>Saved Backtest Runs</h4>
                     {savedRuns.map(run => (
                         <div key={run.id} style={{ display: 'flex', gap: '8px', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', borderTop: '1px solid rgba(148, 163, 184, 0.12)', fontSize: '0.75rem' }}>

@@ -160,7 +160,7 @@ const LiveChart = () => {
                                     y={bodyTop}
                                     width={candleWidth}
                                     height={bodyHeight}
-                                    fill={bullish ? 'transparent' : '#f8fafc'}
+                                    fill={bullish ? '#050505' : '#f8fafc'}
                                     stroke={candleColor}
                                     strokeWidth="1.6"
                                 />

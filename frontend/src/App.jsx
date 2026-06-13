@@ -65,10 +65,10 @@ function App() {
         <div className="App">
             <header className="app-header">
                 <div className="header-brand">
-                    <div className="header-logo">SF</div>
+                    <div className="header-logo">B</div>
                     <div>
-                        <div className="header-title">SignalForge</div>
-                        <div className="header-subtitle">BTC/USD Automated Terminal</div>
+                        <div className="header-title">Bullseye</div>
+                        <div className="header-subtitle">BTC/USD Paper Trading Terminal</div>
                     </div>
                 </div>
                 <div className="header-right">
