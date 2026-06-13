@@ -83,36 +83,43 @@ const LiveChart = () => {
 
     const yFor = (price) => PADDING.top + ((maxHigh - price) / priceRange) * innerHeight;
     const xFor = (index) => PADDING.left + (index * candleSlot) + candleSlot / 2;
-    const levels = Array.from({ length: 9 }, (_, index) => maxHigh - priceRange * (index / 8));
-    const verticalGrid = Array.from({ length: 13 }, (_, index) => PADDING.left + innerWidth * (index / 12));
+    const levels = Array.from({ length: 11 }, (_, index) => maxHigh - priceRange * (index / 10));
+    const verticalGrid = Array.from({ length: 16 }, (_, index) => PADDING.left + innerWidth * (index / 15));
     const latestY = latest ? yFor(latest.close) : null;
     const latestX = candles.length ? xFor(candles.length - 1) : null;
 
     return (
         <div className="chart-container">
             <h2>BTC/USD 1m</h2>
-            <div style={{ width: '100%', overflow: 'hidden', border: '1px solid rgba(55,65,81,0.65)', background: '#080808' }}>
+            <div style={{ width: '100%', overflow: 'hidden' }}>
                 <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} width="100%" height="520" role="img" aria-label="Live Coinbase BTC/USD candlestick chart">
-                    <rect x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} fill="#080808" />
+                    <rect x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} fill="transparent" />
 
-                    {verticalGrid.map((x) => (
+                    {verticalGrid.map((x, index) => (
                         <line
                             key={`v-${x}`}
                             x1={x}
                             y1="0"
                             x2={x}
                             y2={CHART_HEIGHT}
-                            stroke="rgba(80,80,80,0.34)"
-                            strokeWidth="1"
+                            stroke={index % 5 === 0 ? 'rgba(148,163,184,0.24)' : 'rgba(148,163,184,0.10)'}
+                            strokeWidth={index % 5 === 0 ? '1.15' : '0.75'}
                         />
                     ))}
 
-                    {levels.map((level) => {
+                    {levels.map((level, index) => {
                         const y = yFor(level);
                         return (
                             <g key={level}>
-                                <line x1="0" y1={y} x2={CHART_WIDTH} y2={y} stroke="rgba(80,80,80,0.34)" strokeWidth="1" />
-                                <text x={CHART_WIDTH - PADDING.right + 10} y={y + 4} fill="rgba(220,220,220,0.72)" fontSize="12" fontFamily="JetBrains Mono, monospace">
+                                <line
+                                    x1="0"
+                                    y1={y}
+                                    x2={CHART_WIDTH}
+                                    y2={y}
+                                    stroke={index % 5 === 0 ? 'rgba(148,163,184,0.24)' : 'rgba(148,163,184,0.10)'}
+                                    strokeWidth={index % 5 === 0 ? '1.15' : '0.75'}
+                                />
+                                <text x={CHART_WIDTH - PADDING.right + 10} y={y + 4} fill="rgba(226,232,240,0.78)" fontSize="12" fontFamily="JetBrains Mono, monospace">
                                     {formatPrice(level)}
                                 </text>
                             </g>
