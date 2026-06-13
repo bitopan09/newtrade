@@ -1,7 +1,7 @@
 const AnalysisEngine = require('./analysisEngine');
 const DecisionEngine = require('./decisionEngine');
 const ExecutionEngine = require('./executionEngine');
-const emailService = require('./emailService');
+const notificationService = require('./emailService');
 const fetch = require('node-fetch');
 
 const LOT_MIN_BTC = 0.01;
@@ -187,9 +187,9 @@ class TradingBot {
                     if (typeof this.decisionEngine.recordTradeEntry === 'function') {
                         this.decisionEngine.recordTradeEntry();
                     }
-                    // Send email notification for auto-trade
-                    if (process.env.SEND_EMAIL_ON_TRADE === 'true') {
-                        emailService.sendTradeNotification(result.trade, `AUTO ${result.trade.action}`);
+                    // Send Telegram notification for auto-trade
+                    if (process.env.SEND_TELEGRAM_ON_TRADE !== 'false') {
+                        notificationService.sendTradeNotification(result.trade, `AUTO ${result.trade.action}`);
                     }
                 } else {
                     console.log(`Trade execution failed: ${result.reason}`);

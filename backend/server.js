@@ -6,10 +6,9 @@ const fetch = require('node-fetch');
 const cors = require('cors');
 const path = require('path');
 const dotenv = require('dotenv');
-const TelegramBot = require('telegram-bot-api');
 const schedule = require('node-schedule');
 const TradingBot = require('./tradingBot');
-const emailService = require('./emailService');
+const notificationService = require('./emailService');
 
 dotenv.config();
 
@@ -730,32 +729,6 @@ const connectCoinbaseWebSocket = () => {
 
 connectCoinbaseWebSocket();
 
-// Telegram bot setup (placeholder)
-let bot;
-if (process.env.TELEGRAM_BOT_TOKEN) {
-    bot = new TelegramBot({
-        token: process.env.TELEGRAM_BOT_TOKEN,
-    });
-
-    bot.getMe().then((me) => {
-        console.log(`Telegram bot started: @${me.username}`);
-    }).catch((err) => {
-        console.error('Error starting Telegram bot:', err);
-    });
-}
-
-// Function to send Telegram alert
-const sendTelegramAlert = (message) => {
-    if (bot && process.env.TELEGRAM_CHAT_ID) {
-        bot.sendMessage({
-            chat_id: process.env.TELEGRAM_CHAT_ID,
-            text: message
-        }).catch((err) => {
-            console.error('Error sending Telegram message:', err);
-        });
-    }
-};
-
 // Schedule daily tasks
 schedule.scheduleJob('0 0 * * *', () => {
     // Reset daily trade lock at midnight (IST)
@@ -773,37 +746,51 @@ schedule.scheduleJob('0 0 * * *', () => {
                     losingTrades: rows.length - wins.length,
                     totalPnL: rows.reduce((sum, t) => sum + (t.pnl || 0), 0)
                 };
-                emailService.sendDailySummary(summary);
+                notificationService.sendDailySummary(summary);
             }
         });
     }
     
-    sendTelegramAlert('Daily trade lock reset - new trading day started');
+    notificationService.sendAlert('Daily Reset', 'Daily trade lock reset - new trading day started', 'INFO');
 });
 
-// Email notification endpoint
-app.post('/api/email/test', async (req, res) => {
+// Telegram notification endpoints
+app.post('/api/telegram/test', async (req, res) => {
     try {
-        const result = await emailService.sendAlert(
-            'Test Email from Trading Bot',
-            'This is a test email to verify your email configuration is working correctly.',
+        await notificationService.verifyConnection();
+        const result = await notificationService.sendAlert(
+            'Test Telegram Alert',
+            'This is a test Telegram alert from your Railway trading bot.',
             'INFO'
         );
-        res.json({ success: result, message: result ? 'Test email sent successfully' : 'Failed to send test email' });
+        const status = notificationService.getStatus();
+        res.status(result ? 200 : 500).json({
+            success: result,
+            message: result ? 'Test Telegram alert sent successfully' : 'Failed to send Telegram alert',
+            status
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// Email configuration endpoint
-app.get('/api/email/status', (req, res) => {
+app.post('/api/telegram/verify', async (req, res) => {
+    const verified = await notificationService.verifyConnection();
+    res.status(verified ? 200 : 500).json(notificationService.getStatus());
+});
+
+app.get('/api/telegram/status', (req, res) => {
     res.json({
-        configured: emailService.initialized,
-        sendOnTrade: process.env.SEND_EMAIL_ON_TRADE === 'true',
-        sendDailySummary: process.env.SEND_DAILY_SUMMARY === 'true',
-        notificationEmail: process.env.NOTIFY_EMAIL || process.env.EMAIL_USER || 'Not configured'
+        ...notificationService.getStatus(),
+        sendOnTrade: process.env.SEND_TELEGRAM_ON_TRADE !== 'false',
+        sendDailySummary: process.env.SEND_DAILY_SUMMARY === 'true'
     });
 });
+
+// Backward-compatible routes now report/use Telegram because Gmail is disabled for Railway.
+app.post('/api/email/test', (req, res) => res.redirect(307, '/api/telegram/test'));
+app.post('/api/email/verify', (req, res) => res.redirect(307, '/api/telegram/verify'));
+app.get('/api/email/status', (req, res) => res.redirect(307, '/api/telegram/status'));
 
 // Fallback to serve React's index.html for any unknown routes
 app.use((req, res) => {
@@ -817,8 +804,12 @@ const server_instance = server.listen(PORT, '0.0.0.0', () => {
     console.log(`Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`);
     console.log(`Port: ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`Email Service: ${emailService.initialized ? '✅ Enabled' : '❌ Disabled'}`);
+    console.log(`Telegram Service: ${notificationService.initialized ? 'Enabled' : 'Disabled'}`);
     console.log(`${'='.repeat(60)}\n`);
+
+    if (notificationService.initialized) {
+        notificationService.verifyConnection();
+    }
     
     // Auto-start the trading bot (24-hour operation)
     if (process.env.BOT_ENABLED !== 'false') {
@@ -828,8 +819,8 @@ const server_instance = server.listen(PORT, '0.0.0.0', () => {
             console.log('[AUTO-START] Trading bot is now running!');
             
             // Send startup notification
-            if (emailService.initialized && process.env.SEND_ERROR_ALERTS === 'true') {
-                emailService.sendAlert(
+            if (notificationService.initialized && process.env.SEND_ERROR_ALERTS === 'true') {
+                notificationService.sendAlert(
                     'Trading Bot Started',
                     `The trading bot has started and will operate 24 hours in IST timezone.\n\nServer Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`,
                     'INFO'

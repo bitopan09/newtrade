@@ -1,6 +1,6 @@
 const sqlite3 = require('sqlite3').verbose();
-const TelegramBot = require('telegram-bot-api');
 const dotenv = require('dotenv');
+const notificationService = require('./emailService');
 
 dotenv.config();
 
@@ -12,19 +12,6 @@ class ExecutionEngine {
     constructor(db) {
         // Use provided database for trade logging
         this.db = db;
-
-        // Initialize Telegram bot (placeholder)
-        this.bot = null;
-        if (process.env.TELEGRAM_BOT_TOKEN) {
-            try {
-                this.bot = new TelegramBot({
-                    token: process.env.TELEGRAM_BOT_TOKEN,
-                });
-                console.log('Telegram bot initialized');
-            } catch (error) {
-                console.error('Error initializing Telegram bot:', error);
-            }
-        }
 
         // Active trades tracking
         this.activeTrades = new Map();
@@ -379,36 +366,13 @@ class ExecutionEngine {
     }
 
     /**
-     * Send alert via Telegram and Email
+     * Send alert via Telegram
      * @param {string} message - Alert message
      */
     async _sendAlert(message) {
         console.log(`ALERT: ${message}`);
         
-        // Telegram
-        if (this.bot && process.env.TELEGRAM_CHAT_ID) {
-            try {
-                await this.bot.sendMessage({ chat_id: process.env.TELEGRAM_CHAT_ID, text: message });
-            } catch (error) {
-                console.error('Telegram error:', error);
-            }
-        }
-
-        // Email - use the EmailService
-        const EmailService = require('./emailService');
-        if (EmailService && (process.env.EMAIL_RECIPIENT || process.env.NOTIFY_EMAIL)) {
-            try {
-                const trade = {
-                    action: message.includes('BUY') ? 'BUY' : (message.includes('SELL') ? 'SELL' : 'INFO'),
-                    entry_price: null,
-                    quantity: 0.01,
-                    timestamp: new Date()
-                };
-                await EmailService.sendTradeNotification(trade, message);
-            } catch (error) {
-                console.error('Email error:', error);
-            }
-        }
+        await notificationService.sendAlert('Execution Update', message, 'INFO');
     }
     /**
      * Manually close a trade at the current market price

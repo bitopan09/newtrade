@@ -6,20 +6,20 @@ import { API_BASE_URL } from '../services/api';
 const BotStatus = () => {
     const [status, setStatus] = useState(null);
     const [loading, setLoading] = useState(true);
-    const [emailTesting, setEmailTesting] = useState(false);
-    const [emailMessage, setEmailMessage] = useState(null);
+    const [telegramTesting, setTelegramTesting] = useState(false);
+    const [telegramMessage, setTelegramMessage] = useState(null);
 
-    const testEmail = async () => {
-        setEmailTesting(true);
-        setEmailMessage(null);
+    const testTelegram = async () => {
+        setTelegramTesting(true);
+        setTelegramMessage(null);
         try {
-            const res = await axios.post(`${API_BASE_URL}/email/test`);
-            setEmailMessage({ type: 'success', text: 'Test email triggered successfully! Check your inbox.' });
+            await axios.post(`${API_BASE_URL}/telegram/test`);
+            setTelegramMessage({ type: 'success', text: 'Test Telegram alert sent successfully.' });
         } catch (error) {
-            setEmailMessage({ type: 'error', text: 'Failed to trigger test email.' });
+            setTelegramMessage({ type: 'error', text: error.response?.data?.status?.lastError || 'Failed to send Telegram alert.' });
         }
-        setEmailTesting(false);
-        setTimeout(() => setEmailMessage(null), 5000);
+        setTelegramTesting(false);
+        setTimeout(() => setTelegramMessage(null), 5000);
     };
     useEffect(() => {
         const fetchStatus = async () => {
@@ -71,15 +71,15 @@ const BotStatus = () => {
                     )}
                      
                     <button 
-                        onClick={testEmail} 
-                        disabled={emailTesting}
+                        onClick={testTelegram} 
+                        disabled={telegramTesting}
                         style={{ marginTop: '12px', padding: '6px 12px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}
                     >
-                        {emailTesting ? 'Sending...' : 'Test Email Alert'}
+                        {telegramTesting ? 'Sending...' : 'Test Telegram Alert'}
                     </button>
-                    {emailMessage && (
-                        <p style={{ fontSize: '0.8rem', marginTop: '6px', color: emailMessage.type === 'success' ? '#4ade80' : '#f87171' }}>
-                            {emailMessage.text}
+                    {telegramMessage && (
+                        <p style={{ fontSize: '0.8rem', marginTop: '6px', color: telegramMessage.type === 'success' ? '#4ade80' : '#f87171' }}>
+                            {telegramMessage.text}
                         </p>
                     )}
                 </div>

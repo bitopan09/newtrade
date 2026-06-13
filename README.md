@@ -1,12 +1,12 @@
 # 🤖 BTC Trading Bot - Advanced Dashboard
 
-An intelligent, automated BTC/USD trading bot with a modern web dashboard, email notifications, and 24-hour continuous operation in IST timezone.
+An intelligent BTC/USD paper trading bot with a modern web dashboard, Telegram notifications, and 24-hour continuous operation in IST timezone.
 
 ## ✨ Features
 
 ✅ **24/7 Bot Operation** - Runs continuously in IST timezone
 ✅ **Real-time Dashboard** - Live BTC price, trades, and balance tracking
-✅ **Email Notifications** - Get alerts for every trade executed
+✅ **Telegram Notifications** - Get alerts for every trade executed
 ✅ **IST Timezone Support** - All times displayed in Indian Standard Time
 ✅ **Trade Journal** - Comprehensive history with export to CSV
 ✅ **Live Chart** - Real-time BTC/USD price visualization
@@ -20,7 +20,7 @@ An intelligent, automated BTC/USD trading bot with a modern web dashboard, email
 ### Prerequisites
 - Node.js 18+
 - npm
-- Email account (Gmail recommended)
+- Telegram bot token from BotFather
 
 ### Setup (2 minutes)
 
@@ -31,13 +31,12 @@ cd newtrade
 bash setup.sh
 ```
 
-2. **Configure Email**
+2. **Configure Telegram**
 Edit `.env`:
 ```
-EMAIL_SERVICE=gmail
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASSWORD=your-app-password
-NOTIFY_EMAIL=your-email@gmail.com
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_CHAT_ID=your-telegram-chat-id
+SEND_TELEGRAM_ON_TRADE=true
 ```
 
 3. **Start Bot**
@@ -80,31 +79,26 @@ Open browser: `http://localhost:5001`
 - Configurable quantity
 - Real-time feedback
 
-## 📧 Email Notifications
+## Telegram Notifications
 
 Receive instant alerts when:
-- ✉️ A trade is executed
-- ✉️ Daily summary sent at midnight
-- ✉️ Errors or warnings occur
+- A trade is executed
+- Daily summary sent at midnight
+- Errors or warnings occur
 
-### Setup Email
+### Setup Telegram
 
-#### Gmail
-1. Go to https://myaccount.google.com/apppasswords
-2. Select "Mail" and "Windows Computer"
-3. Copy the 16-character password
-4. Add to `.env`:
-```
-EMAIL_USER=your@gmail.com
-EMAIL_PASSWORD=<16-char-app-password>
-```
+1. Create a bot with BotFather.
+2. Add the token to `.env` or Railway Variables.
+3. Open your bot chat and send `/start`.
+4. Call `POST /api/telegram/verify` to discover `TELEGRAM_CHAT_ID` if needed.
+5. Add the chat ID and redeploy.
 
-#### Other Email Services
-Edit `.env`:
+Required variables:
 ```
-EMAIL_SERVICE=outlook|yahoo|etc
-EMAIL_USER=your-email@service.com
-EMAIL_PASSWORD=your-password
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_CHAT_ID=your-telegram-chat-id
+SEND_TELEGRAM_ON_TRADE=true
 ```
 
 ## 🐳 Docker Deployment
@@ -123,9 +117,9 @@ docker-compose up -d
 ### Heroku
 ```bash
 heroku create trading-bot
-heroku config:set EMAIL_USER=your@gmail.com
-heroku config:set EMAIL_PASSWORD=app-password
-heroku config:set NOTIFY_EMAIL=your@gmail.com
+heroku config:set TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+heroku config:set TELEGRAM_CHAT_ID=your-telegram-chat-id
+heroku config:set SEND_TELEGRAM_ON_TRADE=true
 git push heroku main
 ```
 
@@ -141,11 +135,9 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
 PORT=5001
 NODE_ENV=production
 
-# Email
-EMAIL_SERVICE=gmail
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASSWORD=app-password
-NOTIFY_EMAIL=recipient@gmail.com
+# Telegram
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_CHAT_ID=your-telegram-chat-id
 
 # Bot
 BOT_ENABLED=true
@@ -154,7 +146,7 @@ BOT_START_HOUR=0
 BOT_END_HOUR=23
 
 # Notifications
-SEND_EMAIL_ON_TRADE=true
+SEND_TELEGRAM_ON_TRADE=true
 SEND_DAILY_SUMMARY=true
 SEND_ERROR_ALERTS=true
 
@@ -179,11 +171,11 @@ GET /api/trades/active
 POST /api/manual-trade
   { "action": "BUY", "quantity": 0.01 }
 
-# Email Status
-GET /api/email/status
+# Telegram Status
+GET /api/telegram/status
 
-# Test Email
-POST /api/email/test
+# Test Telegram
+POST /api/telegram/test
 
 # Export Trades
 GET /api/trades/export
@@ -200,7 +192,7 @@ newtrade/
 │   ├── analysisEngine.js      # Trading logic
 │   ├── decisionEngine.js      # Signal generation
 │   ├── executionEngine.js     # Trade execution
-│   └── emailService.js        # Email notifications ✨ NEW
+│   └── emailService.js        # Telegram notifications
 ├── frontend/
 │   └── src/
 │       ├── components/        # UI components
@@ -224,26 +216,29 @@ npm run dev:frontend
 
 - **Strategy**: Advanced 10-Factor Confluence Scoring (EMA, RSI, MACD, CPR, VWAP, Wyckoff, etc.)
 - **Timeframe**: 6-hour candles
-- **Position Sizing**: Dynamic Tiered Risk Management (Risk 10% of base equity, starting at a $50 baseline, scaling up automatically when equity doubles).
-- **Risk Management**: Smart Stop Loss (Liquidity/CPR/ATR) & Progressive Trailing Stop (Break-even at 2.5R).
-- **Hours**: Active Session Time Gate from 8:00 AM to 4:00 PM UTC (1:30 PM to 9:30 PM IST).
+- **Position Sizing**: Tiered 5% max risk with discrete lots: `0.01`, `0.02`, `0.03`, or `0.04 BTC`.
+- **Risk Management**: Smart Stop Loss, partial TP, final TP, and trailing stop logic.
+- **Hours**: Configurable session gate. Current defaults allow 24-hour analysis.
 
 ## ⚠️ Disclaimer
 
-- **Simulated Trading**: Current implementation uses simulated prices
+- **Paper Trading**: Current implementation logs paper trades; it does not place real exchange orders
 - **Not Financial Advice**: Use at your own risk
 - **Paper Trading**: Test thoroughly before using real money
 - **Monitor Actively**: Always monitor bot performance
 
 ## 🐛 Troubleshooting
 
-### Emails not sending?
+### Telegram alerts not sending?
 ```bash
-# Check email status
-curl http://localhost:5001/api/email/status
+# Check Telegram status
+curl http://localhost:5001/api/telegram/status
 
-# Send test email
-curl -X POST http://localhost:5001/api/email/test
+# Verify bot/chat
+curl -X POST http://localhost:5001/api/telegram/verify
+
+# Send test alert
+curl -X POST http://localhost:5001/api/telegram/test
 ```
 
 ### Bot not starting?
@@ -284,11 +279,11 @@ MIT License - See LICENSE file
 For issues or questions:
 1. Check [DEPLOYMENT.md](DEPLOYMENT.md)
 2. Review logs: `docker-compose logs -f`
-3. Test email: `curl -X POST http://localhost:5001/api/email/test`
+3. Test Telegram: `curl -X POST http://localhost:5001/api/telegram/test`
 
 ---
 
 **Last Updated**: May 2026
 **Timezone**: Asia/Kolkata (IST) ✅
 **Status**: Production Ready ✅
-**Features**: 24/7 Operation, Email Alerts, IST Support ✅
+**Features**: 24/7 Operation, Telegram Alerts, IST Support ✅

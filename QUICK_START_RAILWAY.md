@@ -22,16 +22,17 @@ Click "Project" → Variables → Add:
 PORT=5001
 NODE_ENV=production
 VITE_API_URL=/api
-SEND_EMAIL_ON_TRADE=true
+SEND_TELEGRAM_ON_TRADE=true
+SEND_ERROR_ALERTS=true
 ```
 
-Add email variables if you want notifications:
+Add Telegram variables for notifications:
 ```
-EMAIL_SERVICE=gmail
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASSWORD=your-app-password
-NOTIFY_EMAIL=your-email@gmail.com
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_CHAT_ID=your-telegram-chat-id
 ```
+
+If you do not know `TELEGRAM_CHAT_ID`, deploy with only `TELEGRAM_BOT_TOKEN`, send `/start` to your bot in Telegram, then call `POST /api/telegram/verify` on the Railway URL. The response will show the chat ID.
 
 ---
 

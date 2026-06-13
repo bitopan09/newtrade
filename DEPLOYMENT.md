@@ -2,7 +2,7 @@
 
 ## Prerequisites
 - Node.js 18+ or Docker
-- Email account (Gmail recommended)
+- Telegram bot token from BotFather
 - A server with public IP (for remote access)
 
 ## Local Deployment
@@ -13,9 +13,8 @@ cp .env.example .env
 ```
 
 Edit `.env` and fill in:
-- `EMAIL_USER` - Your email address
-- `EMAIL_PASSWORD` - Gmail App Password (not your regular password)
-- `NOTIFY_EMAIL` - Where to receive notifications
+- `TELEGRAM_BOT_TOKEN` - Bot token from BotFather
+- `TELEGRAM_CHAT_ID` - Telegram chat ID for alerts
 
 ### 2. Install Dependencies
 ```bash
@@ -80,9 +79,9 @@ heroku login
 heroku create trading-bot-$(date +%s)
 
 # Add environment variables
-heroku config:set EMAIL_USER=your@email.com
-heroku config:set EMAIL_PASSWORD=your-app-password
-heroku config:set NOTIFY_EMAIL=your@email.com
+heroku config:set TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+heroku config:set TELEGRAM_CHAT_ID=your-telegram-chat-id
+heroku config:set SEND_TELEGRAM_ON_TRADE=true
 
 # Deploy
 git push heroku main
@@ -120,19 +119,15 @@ pm2 save
 
 ## Configuration
 
-### Enable Email Notifications
-1. Generate Gmail App Password:
-   - Go to https://myaccount.google.com/apppasswords
-   - Select "Mail" and "Windows Computer"
-   - Use the generated password in `.env`
-
-2. Set email variables:
+### Enable Telegram Notifications
+1. Create a bot with BotFather and copy the token.
+2. Open the bot chat and send `/start`.
+3. Call `POST /api/telegram/verify` to discover `TELEGRAM_CHAT_ID` if needed.
+4. Set Telegram variables:
    ```
-   EMAIL_SERVICE=gmail
-   EMAIL_USER=your-email@gmail.com
-   EMAIL_PASSWORD=your-app-password
-   NOTIFY_EMAIL=your-email@gmail.com
-   SEND_EMAIL_ON_TRADE=true
+   TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+   TELEGRAM_CHAT_ID=your-telegram-chat-id
+   SEND_TELEGRAM_ON_TRADE=true
    ```
 
 ### 24-Hour Operation
@@ -179,10 +174,11 @@ curl http://localhost:5001/api/balance
 
 ## Troubleshooting
 
-### Emails not sending
+### Telegram alerts not sending
 1. Check `.env` file configuration
-2. Verify Gmail App Password (not regular password)
+2. Send `/start` to your Telegram bot
 3. Check logs: `docker-compose logs trading-bot`
+4. Run `curl -X POST http://localhost:5001/api/telegram/verify`
 
 ### Bot not starting trades
 1. Check `BOT_ENABLED=true` in `.env`
@@ -209,7 +205,7 @@ curl http://localhost:5001/api/balance
 For issues or questions:
 1. Check logs: `docker-compose logs -f`
 2. Review configuration in `.env`
-3. Verify email setup
+3. Verify Telegram setup
 4. Check network connectivity
 
 ---
@@ -217,8 +213,8 @@ For issues or questions:
 ## Security Best Practices
 
 1. **Never commit `.env` file** - Use `.env.example`
-2. **Use strong passwords** for Gmail/services
-3. **Enable 2FA** on email account
+2. **Keep Telegram bot tokens secret**
+3. **Rotate leaked bot tokens in BotFather**
 4. **Restrict API access** - Use firewall rules
 5. **Keep secrets in environment variables**, never in code
 6. **Use HTTPS** for remote deployment

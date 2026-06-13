@@ -13,7 +13,7 @@
     "dev:frontend": "cd frontend && npm run dev",
     "test": "node tests/critical.test.js",
     "test:critical": "node tests/critical.test.js",
-    "validate": "node --check backend/unifiedStrategy.js && node --check backend/decisionEngine.js && node --check backend/tradingBot.js && node --check improved_backtest_cpr.js && npm test && cd frontend && npm run build"
+    "validate": "node --check backend/unifiedStrategy.js && node --check backend/decisionEngine.js && node --check backend/tradingBot.js && node --check backend/server.js && node --check backend/emailService.js && node --check test-telegram.js && node --check improved_backtest_cpr.js && npm test && cd frontend && npm run build"
   },
   "keywords": [],
   "author": "",
@@ -24,9 +24,7 @@
     "express": "^5.2.1",
     "node-fetch": "^2.6.7",
     "node-schedule": "^2.1.1",
-    "nodemailer": "^8.0.7",
     "sqlite3": "^6.0.1",
-    "telegram-bot-api": "^2.0.1",
     "ws": "^8.20.0"
   },
   "devDependencies": {

@@ -52,14 +52,22 @@ In Railway Dashboard → Project Settings → Variables, add:
 ```
 PORT=5001
 NODE_ENV=production
-SEND_EMAIL_ON_TRADE=true
+SEND_TELEGRAM_ON_TRADE=true
 SEND_DAILY_SUMMARY=false
 SEND_ERROR_ALERTS=true
-EMAIL_SERVICE=gmail
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASSWORD=your-app-specific-password
-NOTIFY_EMAIL=your-email@gmail.com
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+# Recommended. If omitted, send /start to the bot and call /api/telegram/verify.
+TELEGRAM_CHAT_ID=your-telegram-chat-id
 ```
+
+Telegram is now the notification channel for Railway. Gmail/SMTP is not required.
+
+To get `TELEGRAM_CHAT_ID`:
+
+1. Open your Telegram bot chat and send `/start`.
+2. Deploy the app with `TELEGRAM_BOT_TOKEN` set.
+3. Call `POST /api/telegram/verify` on your Railway URL.
+4. Read the returned `chatId` and add it as `TELEGRAM_CHAT_ID` in Railway Variables.
 
 #### 3. **Set Build & Start Commands**
 In Railway → Deploy → Settings:
@@ -191,12 +199,10 @@ The app connects to WebSocket at:
 PORT=5001
 NODE_ENV=production
 
-# Email
-EMAIL_SERVICE=gmail
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASSWORD=app-password
-NOTIFY_EMAIL=your-email@gmail.com
-SEND_EMAIL_ON_TRADE=true
+# Telegram notifications
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_CHAT_ID=your-telegram-chat-id
+SEND_TELEGRAM_ON_TRADE=true
 SEND_DAILY_SUMMARY=true
 SEND_ERROR_ALERTS=true
 
@@ -273,10 +279,25 @@ http://localhost:5001
 2. Check wss:// protocol is used for HTTPS
 3. Verify port forwarding if behind proxy
 
-### Email Notifications Not Working
-1. Verify EMAIL_USER is app-specific password (not regular password)
-2. Check SEND_EMAIL_ON_TRADE is set to true
-3. Verify NOTIFY_EMAIL address is correct
+### Telegram Notifications Not Working
+1. Verify `TELEGRAM_BOT_TOKEN` exists in Railway Variables.
+2. Open the bot in Telegram and send `/start`.
+3. Call `POST /api/telegram/verify` and check `lastError`.
+4. If the response includes `chatId`, add that value as `TELEGRAM_CHAT_ID` in Railway Variables and redeploy.
+5. Call `POST /api/telegram/test` to send a test alert.
+6. Check `SEND_TELEGRAM_ON_TRADE=true` if you expect trade alerts.
+
+Useful endpoints:
+
+- `GET /api/telegram/status`
+- `POST /api/telegram/verify`
+- `POST /api/telegram/test`
+
+Common Telegram errors:
+
+- `TELEGRAM_CHAT_ID is missing`: send `/start` to the bot, then call `/api/telegram/verify`.
+- `Unauthorized`: wrong or revoked bot token. Create a new token from BotFather.
+- `Forbidden: bot was blocked by the user`: unblock the bot and send `/start` again.
 
 ---
 

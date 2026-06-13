@@ -1,243 +1,188 @@
-const nodemailer = require('nodemailer');
+const fetch = require('node-fetch');
 const dotenv = require('dotenv');
-const dns = require('dns');
-
-// Force DNS to prefer IPv4 globally to resolve ENETUNREACH issues on cloud providers (like Railway)
-if (dns.setDefaultResultOrder) {
-    dns.setDefaultResultOrder('ipv4first');
-}
 
 dotenv.config();
 
-class EmailService {
+class TelegramNotificationService {
     constructor() {
-        this.transporter = null;
         this.initialized = false;
+        this.verified = false;
+        this.lastError = null;
+        this.lastVerifiedAt = null;
+        this.botUsername = null;
+        this.cachedChatId = null;
         this.init();
     }
 
+    _cleanEnv(value) {
+        return String(value || '').trim().replace(/^['"]|['"]$/g, '');
+    }
+
+    _getConfig() {
+        return {
+            token: this._cleanEnv(process.env.TELEGRAM_BOT_TOKEN),
+            chatId: this._cleanEnv(process.env.TELEGRAM_CHAT_ID)
+        };
+    }
+
+    _recordError(prefix, error) {
+        const description = error?.description || error?.message || 'Unknown error';
+        this.lastError = `${prefix}: ${description}`;
+        console.error(this.lastError);
+    }
+
     init() {
-        try {
-            if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-                console.warn('Email service not configured. Email notifications will be disabled.');
-                return;
-            }
+        const { token, chatId } = this._getConfig();
 
-            const isGmail = (process.env.EMAIL_SERVICE || 'gmail').toLowerCase() === 'gmail';
-
-            this.transporter = nodemailer.createTransport(isGmail ? {
-                host: 'smtp.gmail.com',
-                port: 465,
-                secure: true,
-                family: 4, // Force IPv4 to resolve Railway's ENETUNREACH IPv6 issue
-                auth: {
-                    user: process.env.EMAIL_USER,
-                    pass: process.env.EMAIL_PASSWORD
-                }
-            } : {
-                service: process.env.EMAIL_SERVICE,
-                auth: {
-                    user: process.env.EMAIL_USER,
-                    pass: process.env.EMAIL_PASSWORD
-                }
-            });
-
-            this.initialized = true;
-            console.log('Email service initialized successfully');
-        } catch (error) {
-            console.error('Failed to initialize email service:', error.message);
+        if (!token) {
             this.initialized = false;
+            this.lastError = 'TELEGRAM_BOT_TOKEN is missing';
+            console.warn('Telegram notification service disabled: TELEGRAM_BOT_TOKEN is missing.');
+            return;
+        }
+
+        this.initialized = true;
+        this.cachedChatId = chatId || null;
+        this.lastError = chatId ? null : 'TELEGRAM_CHAT_ID is missing; send /start to the bot and call /api/telegram/verify';
+        console.log(`Telegram notification service initialized${chatId ? ' with configured chat ID' : ' without chat ID'}`);
+    }
+
+    async _telegramRequest(method, payload = {}) {
+        const { token } = this._getConfig();
+        if (!token) throw new Error('TELEGRAM_BOT_TOKEN is missing');
+
+        const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.ok === false) {
+            const error = new Error(data.description || `Telegram API error ${response.status}`);
+            error.description = data.description;
+            throw error;
+        }
+
+        return data.result;
+    }
+
+    async _resolveChatId() {
+        const config = this._getConfig();
+        if (config.chatId) {
+            this.cachedChatId = config.chatId;
+            return config.chatId;
+        }
+
+        if (this.cachedChatId) return this.cachedChatId;
+
+        const updates = await this._telegramRequest('getUpdates', { limit: 20 });
+        const latestUpdate = [...updates].reverse().find(update => update.message?.chat?.id || update.channel_post?.chat?.id);
+        const chatId = latestUpdate?.message?.chat?.id || latestUpdate?.channel_post?.chat?.id;
+
+        if (!chatId) {
+            throw new Error('TELEGRAM_CHAT_ID is missing and no Telegram chat was found. Send /start to the bot, then retry /api/telegram/verify.');
+        }
+
+        this.cachedChatId = String(chatId);
+        return this.cachedChatId;
+    }
+
+    async verifyConnection() {
+        if (!this.initialized) return false;
+
+        try {
+            const bot = await this._telegramRequest('getMe');
+            this.botUsername = bot.username || null;
+            await this._resolveChatId();
+            this.verified = true;
+            this.lastVerifiedAt = new Date().toISOString();
+            this.lastError = null;
+            console.log(`Telegram bot verified${this.botUsername ? `: @${this.botUsername}` : ''}`);
+            return true;
+        } catch (error) {
+            this.verified = false;
+            this._recordError('Telegram verification failed', error);
+            return false;
         }
     }
 
-    /**
-     * Send trade execution notification
-     * @param {Object} trade - Trade object
-     * @param {string} tradeType - 'BUY' or 'SELL'
-     */
+    getStatus() {
+        const config = this._getConfig();
+        return {
+            service: 'telegram',
+            configured: Boolean(config.token),
+            initialized: this.initialized,
+            verified: this.verified,
+            tokenConfigured: Boolean(config.token),
+            chatIdConfigured: Boolean(config.chatId),
+            chatId: config.chatId || this.cachedChatId || null,
+            botUsername: this.botUsername,
+            lastVerifiedAt: this.lastVerifiedAt,
+            lastError: this.lastError
+        };
+    }
+
+    async sendMessage(message) {
+        if (!this.initialized) {
+            console.warn('Telegram notification service not initialized. Skipping message.');
+            return false;
+        }
+
+        try {
+            const chatId = await this._resolveChatId();
+            await this._telegramRequest('sendMessage', {
+                chat_id: chatId,
+                text: message,
+                disable_web_page_preview: true
+            });
+            this.lastError = null;
+            return true;
+        } catch (error) {
+            this._recordError('Telegram send failed', error);
+            return false;
+        }
+    }
+
     async sendTradeNotification(trade, tradeType = 'TRADE') {
-        if (!this.initialized) {
-            console.warn('Email service not initialized. Skipping notification.');
-            return false;
-        }
+        const action = trade.action || tradeType || 'TRADE';
+        const entry = Number.isFinite(Number(trade.entry_price)) ? `$${Number(trade.entry_price).toFixed(2)}` : 'N/A';
+        const sl = Number.isFinite(Number(trade.sl)) ? `$${Number(trade.sl).toFixed(2)}` : 'N/A';
+        const tp1 = Number.isFinite(Number(trade.tp1)) ? `$${Number(trade.tp1).toFixed(2)}` : 'N/A';
+        const tp2 = Number.isFinite(Number(trade.tp2)) ? `$${Number(trade.tp2).toFixed(2)}` : 'N/A';
+        const score = trade.score ? `${trade.score}/10` : 'N/A';
 
-        try {
-            const mailOptions = {
-                from: process.env.EMAIL_USER,
-                to: process.env.NOTIFY_EMAIL || process.env.EMAIL_USER,
-                subject: `🚀 Trading Bot Alert: ${tradeType} Executed!`,
-                html: this.generateTradeEmailHTML(trade, tradeType)
-            };
-
-            await this.transporter.sendMail(mailOptions);
-            console.log(`Trade notification sent for ${tradeType} at ${new Date().toISOString()}`);
-            return true;
-        } catch (error) {
-            console.error('Error sending trade notification:', error.message);
-            return false;
-        }
+        return this.sendMessage([
+            `Trading Bot Alert: ${tradeType}`,
+            `Action: ${action}`,
+            `Entry: ${entry}`,
+            `Quantity: ${trade.quantity || 0.01} BTC`,
+            `SL: ${sl}`,
+            `TP1: ${tp1}`,
+            `TP2: ${tp2}`,
+            `Score: ${score}`,
+            `Time: ${new Date(trade.timestamp || Date.now()).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`
+        ].join('\n'));
     }
 
-    /**
-     * Send daily summary email
-     * @param {Object} summary - Daily summary data
-     */
     async sendDailySummary(summary) {
-        if (!this.initialized) {
-            console.warn('Email service not initialized. Skipping daily summary.');
-            return false;
-        }
-
-        try {
-            const mailOptions = {
-                from: process.env.EMAIL_USER,
-                to: process.env.NOTIFY_EMAIL || process.env.EMAIL_USER,
-                subject: `📊 Trading Bot Daily Summary - ${new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}`,
-                html: this.generateDailySummaryHTML(summary)
-            };
-
-            await this.transporter.sendMail(mailOptions);
-            console.log(`Daily summary email sent`);
-            return true;
-        } catch (error) {
-            console.error('Error sending daily summary:', error.message);
-            return false;
-        }
+        return this.sendMessage([
+            'Trading Bot Daily Summary',
+            `Trades: ${summary.tradesExecuted || 0}`,
+            `Wins: ${summary.winningTrades || 0}`,
+            `Losses: ${summary.losingTrades || 0}`,
+            `Total PnL: $${Number(summary.totalPnL || 0).toFixed(2)}`,
+            `Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`
+        ].join('\n'));
     }
 
-    /**
-     * Send alert email
-     * @param {string} title - Alert title
-     * @param {string} message - Alert message
-     * @param {string} severity - 'INFO', 'WARNING', 'ERROR'
-     */
     async sendAlert(title, message, severity = 'INFO') {
-        if (!this.initialized) {
-            console.warn('Email service not initialized. Skipping alert.');
-            return false;
-        }
-
-        try {
-            const severityEmoji = {
-                'INFO': 'ℹ️',
-                'WARNING': '⚠️',
-                'ERROR': '❌'
-            };
-
-            const mailOptions = {
-                from: process.env.EMAIL_USER,
-                to: process.env.NOTIFY_EMAIL || process.env.EMAIL_USER,
-                subject: `${severityEmoji[severity] || '📢'} Trading Bot Alert: ${title}`,
-                html: `
-                    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
-                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-                            <h1 style="margin: 0; font-size: 24px;">${severityEmoji[severity] || '📢'} ${title}</h1>
-                            <p style="margin: 5px 0 0 0; opacity: 0.9;">Severity: ${severity}</p>
-                        </div>
-                        <div style="background: #f8f9fa; padding: 20px; border-radius: 0 0 8px 8px; border: 1px solid #e2e8f0;">
-                            <p style="margin: 0; font-size: 14px; line-height: 1.6;">${message}</p>
-                            <p style="margin: 15px 0 0 0; font-size: 12px; color: #718096;">
-                                Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST
-                            </p>
-                        </div>
-                    </div>
-                `
-            };
-
-            await this.transporter.sendMail(mailOptions);
-            console.log(`Alert email sent: ${title}`);
-            return true;
-        } catch (error) {
-            console.error('Error sending alert email:', error.message);
-            return false;
-        }
-    }
-
-    generateTradeEmailHTML(trade, type) {
-        const tradeColor = trade.action === 'BUY' ? '#10b981' : '#ef4444';
-        const tradeEmoji = trade.action === 'BUY' ? '📈' : '📉';
-
-        return `
-            <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
-                <div style="background: linear-gradient(135deg, ${tradeColor}80 0%, ${tradeColor} 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-                    <h1 style="margin: 0; font-size: 28px;">${tradeEmoji} ${trade.action} Trade Executed</h1>
-                    <p style="margin: 5px 0 0 0; opacity: 0.95; font-size: 16px;">BTC/USD Trading</p>
-                </div>
-                <div style="background: #f8f9fa; padding: 20px; border-radius: 0 0 8px 8px; border: 1px solid #e2e8f0;">
-                    <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Action</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: ${tradeColor}; font-weight: bold; font-size: 18px;">${trade.action}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Entry Price</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">$${trade.entry_price?.toFixed(2) || 'N/A'}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Quantity</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">${trade.quantity || 0.01} BTC</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Stop Loss</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">$${trade.sl?.toFixed(2) || 'N/A'}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Take Profit</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">$${trade.tp1?.toFixed(2) || trade.tp?.toFixed(2) || 'N/A'}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Confluence Score</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748;">${trade.score ? trade.score + '/10' : 'N/A'}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; font-weight: bold; color: #2d3748;">Reasoning</td>
-                            <td style="padding: 10px; color: #2d3748; font-size: 13px;">${trade.notes || trade.confluence || 'Institutional setup'}</td>
-                        </tr>
-                    </table>
-                    <p style="margin: 0; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; padding-top: 10px;">
-                        Timestamp: ${new Date(trade.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST
-                    </p>
-                </div>
-                <div style="text-align: center; padding: 15px; font-size: 12px; color: #718096;">
-                    <p>This is an automated notification from Trading Bot.</p>
-                </div>
-            </div>
-        `;
-    }
-
-    generateDailySummaryHTML(summary) {
-        return `
-            <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
-                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-                    <h1 style="margin: 0; font-size: 28px;">📊 Daily Trading Summary</h1>
-                    <p style="margin: 5px 0 0 0; opacity: 0.95;">${new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: 'long', day: 'numeric' })}</p>
-                </div>
-                <div style="background: #f8f9fa; padding: 20px; border-radius: 0 0 8px 8px; border: 1px solid #e2e8f0;">
-                    <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Trades Executed</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #2d3748; font-size: 18px; font-weight: bold;">${summary.tradesExecuted || 0}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Winning Trades</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #10b981; font-weight: bold;">${summary.winningTrades || 0}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #2d3748;">Losing Trades</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; color: #ef4444; font-weight: bold;">${summary.losingTrades || 0}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 10px; font-weight: bold; color: #2d3748;">Total P&L</td>
-                            <td style="padding: 10px; color: ${summary.totalPnL >= 0 ? '#10b981' : '#ef4444'}; font-size: 18px; font-weight: bold;">₹${summary.totalPnL?.toFixed(2) || '0.00'}</td>
-                        </tr>
-                    </table>
-                    <p style="margin: 0; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; padding-top: 10px;">
-                        Report Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST
-                    </p>
-                </div>
-            </div>
-        `;
+        return this.sendMessage([
+            `Trading Bot ${severity}: ${title}`,
+            message,
+            `Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`
+        ].join('\n'));
     }
 }
 
-module.exports = new EmailService();
+module.exports = new TelegramNotificationService();

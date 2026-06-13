@@ -207,7 +207,7 @@ The trading logic remains exactly as it was. Only notification and UI improvemen
 ## 📦 New Dependencies
 
 Added to `package.json`:
-- `nodemailer` (^8.0.7) - Already in package.json
+- Telegram notifications now use the Bot API over `node-fetch`; SMTP/Gmail dependencies are no longer required.
 - No new dependencies required!
 
 All other dependencies were already present.

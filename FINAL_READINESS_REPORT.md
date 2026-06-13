@@ -179,4 +179,4 @@ Interpretation: the selected profile targets high in-sample 90-day return while 
 2. Add longer historical datasets before increasing real capital exposure.
 3. Add a formal database migration system for schema changes.
 4. Add CI to run `npm run validate` on every push.
-5. Refactor email service initialization so tests do not initialize SMTP at import time.
+5. Rename the legacy `emailService.js` filename to `notificationService.js` in a future cleanup.
