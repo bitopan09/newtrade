@@ -6,16 +6,27 @@ const CHART_HEIGHT = 560;
 const PADDING = { top: 38, right: 96, bottom: 42, left: 8 };
 const CANDLE_GRANULARITY_SECONDS = 60;
 
+const getChartProfile = () => {
+    if (typeof window === 'undefined') return { candleLimit: 140, compact: false };
+    if (window.innerWidth <= 420) return { candleLimit: 56, compact: true };
+    if (window.innerWidth <= 768) return { candleLimit: 72, compact: true };
+    if (window.innerWidth <= 1024) return { candleLimit: 96, compact: false };
+    return { candleLimit: 140, compact: false };
+};
+
 const formatPrice = (value) => `$${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 
 const LiveChart = () => {
     const [candles, setCandles] = useState([]);
     const [hovered, setHovered] = useState(null);
     const [error, setError] = useState('');
+    const [chartProfile, setChartProfile] = useState(getChartProfile);
+    const candleLimit = chartProfile.candleLimit;
+    const compactChart = chartProfile.compact;
 
     const loadCandles = async () => {
         try {
-            const data = await fetchCandles(140, CANDLE_GRANULARITY_SECONDS);
+            const data = await fetchCandles(candleLimit, CANDLE_GRANULARITY_SECONDS);
             setCandles((data.candles || []).map(candle => ({
                 ...candle,
                 timestamp: new Date(candle.timestamp),
@@ -31,6 +42,19 @@ const LiveChart = () => {
             setError('Could not load real Coinbase candles');
         }
     };
+
+    useEffect(() => {
+        const handleResize = () => {
+            setChartProfile(prev => {
+                const next = getChartProfile();
+                return next.candleLimit === prev.candleLimit && next.compact === prev.compact ? prev : next;
+            });
+        };
+
+        window.addEventListener('resize', handleResize);
+
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
 
     useEffect(() => {
         loadCandles();
@@ -70,7 +94,7 @@ const LiveChart = () => {
             clearInterval(refresh);
             socket.close();
         };
-    }, []);
+    }, [candleLimit]);
 
     const latest = candles[candles.length - 1];
     const hoveredCandle = hovered?.candle || null;
@@ -87,8 +111,10 @@ const LiveChart = () => {
 
     const yFor = (price) => PADDING.top + ((maxHigh - price) / priceRange) * innerHeight;
     const xFor = (index) => PADDING.left + (index * candleSlot) + candleSlot / 2;
-    const levels = Array.from({ length: 10 }, (_, index) => maxHigh - priceRange * (index / 9));
-    const verticalGrid = Array.from({ length: 19 }, (_, index) => PADDING.left + innerWidth * (index / 18));
+    const levelCount = compactChart ? 6 : 10;
+    const verticalCount = compactChart ? 10 : 19;
+    const levels = Array.from({ length: levelCount }, (_, index) => maxHigh - priceRange * (index / (levelCount - 1)));
+    const verticalGrid = Array.from({ length: verticalCount }, (_, index) => PADDING.left + innerWidth * (index / (verticalCount - 1)));
     const latestY = latest ? yFor(latest.close) : null;
     const latestX = candles.length ? xFor(candles.length - 1) : null;
     const hoveredX = hovered ? xFor(hovered.index) : null;
@@ -98,15 +124,15 @@ const LiveChart = () => {
 
     return (
         <div className="chart-container">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+            <div className="live-chart-header">
                 <h2 style={{ marginBottom: 0 }}>BTC/USD 1m</h2>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '0.75rem', color: '#cbd5e1', fontFamily: 'JetBrains Mono, monospace' }}>
+                <div className="live-chart-source">
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 10px #22c55e' }} />
-                    Coinbase Live OHLC
+                    <span>{compactChart ? 'Coinbase 1m' : 'Coinbase Live OHLC'}</span>
                 </div>
             </div>
-            <div style={{ width: '100%', overflow: 'hidden' }}>
-                <svg viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} width="100%" height="560" role="img" aria-label="Live Coinbase BTC/USD candlestick chart">
+            <div className="live-chart-wrap">
+                <svg className="live-chart-svg" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} width="100%" role="img" aria-label="Live Coinbase BTC/USD candlestick chart">
                     <rect x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} fill="transparent" />
                     <rect x={PADDING.left} y={PADDING.top} width={innerWidth} height={innerHeight} fill="rgba(2,6,23,0.14)" stroke="rgba(148,163,184,0.16)" />
 
@@ -134,7 +160,7 @@ const LiveChart = () => {
                                     stroke={index % 5 === 0 ? 'rgba(148,163,184,0.24)' : 'rgba(148,163,184,0.10)'}
                                     strokeWidth={index % 5 === 0 ? '1.15' : '0.75'}
                                 />
-                                <text x={plotRight + 10} y={y + 4} fill="rgba(226,232,240,0.78)" fontSize="12" fontFamily="JetBrains Mono, monospace">
+                                <text x={plotRight + 10} y={y + 4} fill="rgba(226,232,240,0.78)" fontSize={compactChart ? '11' : '12'} fontFamily="JetBrains Mono, monospace">
                                     {formatPrice(level)}
                                 </text>
                             </g>
@@ -173,7 +199,7 @@ const LiveChart = () => {
                             <line x1={PADDING.left} y1={latestY} x2={plotRight} y2={latestY} stroke="rgba(255,255,255,0.74)" strokeDasharray="1 6" strokeLinecap="round" strokeWidth="1.4" />
                             <line x1={latestX} y1={PADDING.top} x2={latestX} y2={plotBottom} stroke="rgba(255,255,255,0.55)" strokeDasharray="7 8" strokeWidth="1.15" />
                             <rect x={plotRight + 6} y={latestY - 13} width="84" height="26" fill="rgba(15,23,42,0.96)" stroke="rgba(255,255,255,0.26)" />
-                            <text x={plotRight + 12} y={latestY + 4} fill="#f8fafc" fontSize="12" fontFamily="JetBrains Mono, monospace">
+                            <text x={plotRight + 12} y={latestY + 4} fill="#f8fafc" fontSize={compactChart ? '11' : '12'} fontFamily="JetBrains Mono, monospace">
                                 {formatPrice(latest.close)}
                             </text>
                             <text x={PADDING.left + 6} y={CHART_HEIGHT - 10} fill="rgba(220,220,220,0.64)" fontSize="12" fontFamily="JetBrains Mono, monospace">
@@ -189,10 +215,14 @@ const LiveChart = () => {
                         <>
                             <line x1={hoveredX} y1={PADDING.top} x2={hoveredX} y2={plotBottom} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 5" strokeWidth="1" />
                             <line x1={PADDING.left} y1={hoveredY} x2={plotRight} y2={hoveredY} stroke="rgba(59,130,246,0.45)" strokeDasharray="4 5" strokeWidth="1" />
-                            <rect x={PADDING.left + 10} y="8" width="456" height="24" fill="rgba(2,6,23,0.82)" stroke="rgba(59,130,246,0.35)" />
-                            <text x={PADDING.left + 18} y="24" fill="#e2e8f0" fontSize="12" fontFamily="JetBrains Mono, monospace">
-                                {hoveredCandle.timestamp.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} IST  O {formatPrice(hoveredCandle.open)}  H {formatPrice(hoveredCandle.high)}  L {formatPrice(hoveredCandle.low)}  C {formatPrice(hoveredCandle.close)}
-                            </text>
+                            {!compactChart && (
+                                <>
+                                    <rect x={PADDING.left + 10} y="8" width="456" height="24" fill="rgba(2,6,23,0.82)" stroke="rgba(59,130,246,0.35)" />
+                                    <text x={PADDING.left + 18} y="24" fill="#e2e8f0" fontSize="12" fontFamily="JetBrains Mono, monospace">
+                                        {hoveredCandle.timestamp.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} IST  O {formatPrice(hoveredCandle.open)}  H {formatPrice(hoveredCandle.high)}  L {formatPrice(hoveredCandle.low)}  C {formatPrice(hoveredCandle.close)}
+                                    </text>
+                                </>
+                            )}
                         </>
                     )}
                 </svg>
