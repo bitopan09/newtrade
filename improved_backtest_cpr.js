@@ -6,7 +6,14 @@
  * - Shows honest drawdown and real equity curve
  */
 const fetch = require('node-fetch');
+const dotenv = require('dotenv');
 const UnifiedStrategy = require('./backend/unifiedStrategy');
+
+dotenv.config();
+
+const LOT_MIN_BTC = 0.01;
+const LOT_MAX_BTC = 0.04;
+const LOT_STEP_BTC = 0.01;
 
 // Known high-impact news dates (FOMC, CPI, NFP, etc.) in 2026
 // In production, this would be fetched from an API
@@ -25,6 +32,61 @@ const HIGH_IMPACT_NEWS_DATES = new Set([
     // Major crypto-specific events
     '2026-04-15', // Tax deadline
 ]);
+
+function getNumberEnv(name, fallback) {
+    const value = Number(process.env[name]);
+    return Number.isFinite(value) ? value : fallback;
+}
+
+const BACKTEST_CONFIG = {
+    RISK_PERCENTAGE: getNumberEnv('RISK_PERCENTAGE', 5),
+    DAILY_TRADE_LIMIT: getNumberEnv('DAILY_TRADE_LIMIT', 1),
+    MAX_DAILY_LOSSES: getNumberEnv('MAX_DAILY_LOSSES', 1),
+    TRADING_MIN_BTC_QTY: LOT_MIN_BTC,
+    TRADING_MAX_BTC_QTY: LOT_MAX_BTC,
+    MAX_SL_PERCENT_OF_PRICE: getNumberEnv('MAX_SL_PERCENT_OF_PRICE', 0.02),
+    BACKTEST_FEE_RATE: getNumberEnv('BACKTEST_FEE_RATE', 0.001),
+    BACKTEST_SLIPPAGE_RATE: getNumberEnv('BACKTEST_SLIPPAGE_RATE', 0.0005),
+    BACKTEST_SPREAD_RATE: getNumberEnv('BACKTEST_SPREAD_RATE', 0.0002)
+};
+
+function getRiskFraction() {
+    const riskFraction = BACKTEST_CONFIG.RISK_PERCENTAGE >= 1
+        ? BACKTEST_CONFIG.RISK_PERCENTAGE / 100
+        : BACKTEST_CONFIG.RISK_PERCENTAGE;
+    return Math.min(0.05, Math.max(0, riskFraction));
+}
+
+function getTieredBaseBalance(equity) {
+    let baseBalance = 50;
+    while (baseBalance * 2 <= equity) baseBalance *= 2;
+    return baseBalance;
+}
+
+function calculatePositionSize({ equity, entryPrice, stopLoss }) {
+    const baseBalance = getTieredBaseBalance(equity);
+    const riskAmount = baseBalance * getRiskFraction();
+    const slDistance = Math.max(Math.abs(entryPrice - stopLoss), 0.1);
+    const rawQuantity = riskAmount / slDistance;
+    const cappedQuantity = Math.min(BACKTEST_CONFIG.TRADING_MAX_BTC_QTY, rawQuantity);
+    const quantity = parseFloat((Math.floor((cappedQuantity + 1e-9) / LOT_STEP_BTC) * LOT_STEP_BTC).toFixed(2));
+    const actualRisk = quantity * slDistance;
+    const minQtyRisk = BACKTEST_CONFIG.TRADING_MIN_BTC_QTY * slDistance;
+
+    if (slDistance / entryPrice > BACKTEST_CONFIG.MAX_SL_PERCENT_OF_PRICE) {
+        return { allowed: false, reason: `Stop distance too wide: ${(slDistance / entryPrice * 100).toFixed(2)}%` };
+    }
+
+    if (quantity < BACKTEST_CONFIG.TRADING_MIN_BTC_QTY) {
+        return { allowed: false, reason: `Minimum lot would risk $${minQtyRisk.toFixed(2)}` };
+    }
+
+    if (actualRisk > riskAmount * 1.05) {
+        return { allowed: false, reason: `Actual risk $${actualRisk.toFixed(2)} exceeds $${riskAmount.toFixed(2)}` };
+    }
+
+    return { allowed: true, quantity, riskAmount, actualRisk, slDistance };
+}
 
 function isNewsDay(timestamp) {
     const dateStr = timestamp.toISOString().split('T')[0];
@@ -76,13 +138,15 @@ async function fetchHistoricalData() {
 
 async function runBacktest() {
     const historicalData = await fetchHistoricalData();
-    const strategy = new UnifiedStrategy();
+    const strategy = new UnifiedStrategy(BACKTEST_CONFIG);
 
     console.log('\n=== IMPROVED STRATEGY BACKTEST (v2) ===');
     console.log(`Data: Coinbase BTC/USD 6H candles`);
     console.log(`Period: ${historicalData[0].timestamp.toISOString().split('T')[0]} to ${historicalData[historicalData.length - 1].timestamp.toISOString().split('T')[0]}`);
     console.log(`Confluence Threshold: ${strategy.CONFLUENCE_THRESHOLD}/10 (direction-aware)`);
-    console.log(`TP1 RR: 1:${strategy.TP1_RR} | TP2 RR: 1:${strategy.TP2_RR}`);
+    console.log(`Risk: ${BACKTEST_CONFIG.RISK_PERCENTAGE}% tiered by doubled base balance`);
+    console.log(`Fees: ${(BACKTEST_CONFIG.BACKTEST_FEE_RATE * 100).toFixed(2)}% | Slippage: ${(BACKTEST_CONFIG.BACKTEST_SLIPPAGE_RATE * 100).toFixed(2)}% | Spread: ${(BACKTEST_CONFIG.BACKTEST_SPREAD_RATE * 100).toFixed(2)}%`);
+    console.log(`TP1 RR: 1:${strategy.PARTIAL_TP_RR} | TP2 RR: 1:${strategy.FINAL_TP_RR}`);
     console.log('========================================\n');
 
     let equity = 50.0;
@@ -94,10 +158,27 @@ async function runBacktest() {
     let cooldownCandles = 0;
     let newsSkipCount = 0;
     let minEquity = initialEquity;
+    let totalFees = 0;
+    let totalSlippageCost = 0;
+    let dailyTradeDate = null;
+    let dailyTradeCount = 0;
+    let dailyLossCount = 0;
+    const skippedReasons = {};
+
+    const recordSkip = (reason) => {
+        skippedReasons[reason] = (skippedReasons[reason] || 0) + 1;
+    };
 
     for (let i = 50; i < historicalData.length; i++) {
         const currentWindow = historicalData.slice(i - 50, i);
         const currentCandle = historicalData[i];
+        const currentDateKey = currentCandle.timestamp.toISOString().split('T')[0];
+
+        if (currentDateKey !== dailyTradeDate) {
+            dailyTradeDate = currentDateKey;
+            dailyTradeCount = 0;
+            dailyLossCount = 0;
+        }
 
         if (i % 10 === 0) {
             equityCurve.push({ day: equityCurve.length + 1, equity });
@@ -114,13 +195,23 @@ async function runBacktest() {
             
             if (exitResult.partialClose) {
                 const halfQty = activeTrade.quantity * 0.5;
-                const partialPnl = activeTrade.action === 'BUY'
-                    ? (exitResult.exitPrice - activeTrade.entryPrice) * halfQty
-                    : (activeTrade.entryPrice - exitResult.exitPrice) * halfQty;
+                const exitPrice = activeTrade.action === 'BUY'
+                    ? exitResult.exitPrice * (1 - BACKTEST_CONFIG.BACKTEST_SLIPPAGE_RATE - BACKTEST_CONFIG.BACKTEST_SPREAD_RATE / 2)
+                    : exitResult.exitPrice * (1 + BACKTEST_CONFIG.BACKTEST_SLIPPAGE_RATE + BACKTEST_CONFIG.BACKTEST_SPREAD_RATE / 2);
+                const grossPartialPnl = activeTrade.action === 'BUY'
+                    ? (exitPrice - activeTrade.entryPrice) * halfQty
+                    : (activeTrade.entryPrice - exitPrice) * halfQty;
+                const exitFee = exitPrice * halfQty * BACKTEST_CONFIG.BACKTEST_FEE_RATE;
+                const entryFeeShare = activeTrade.entryFee * 0.5;
+                const partialPnl = grossPartialPnl - entryFeeShare - exitFee;
                     
-                equity += partialPnl;
+                equity += grossPartialPnl - exitFee;
                 activeTrade.quantity -= halfQty; // Keep remaining 50%
+                activeTrade.entryFee -= entryFeeShare;
                 activeTrade.partialClosed = true;
+                totalFees += exitFee;
+                totalSlippageCost += Math.abs(exitPrice - exitResult.exitPrice) * halfQty;
+                minEquity = Math.min(minEquity, equity);
                 
                 // Log the partial close
                 trades.push({
@@ -129,7 +220,7 @@ async function runBacktest() {
                     pnl: partialPnl,
                     exitTimestamp: currentCandle.timestamp,
                     exitReason: 'Partial TP (50%)',
-                    exitPrice: exitResult.exitPrice,
+                    exitPrice,
                     status: 'CLOSED_PARTIAL',
                     equityAfter: equity
                 });
@@ -137,21 +228,36 @@ async function runBacktest() {
             }
 
             if (exitResult.closed) {
-                equity += exitResult.pnl;
+                const exitPrice = activeTrade.action === 'BUY'
+                    ? exitResult.exitPrice * (1 - BACKTEST_CONFIG.BACKTEST_SLIPPAGE_RATE - BACKTEST_CONFIG.BACKTEST_SPREAD_RATE / 2)
+                    : exitResult.exitPrice * (1 + BACKTEST_CONFIG.BACKTEST_SLIPPAGE_RATE + BACKTEST_CONFIG.BACKTEST_SPREAD_RATE / 2);
+                const grossPnl = activeTrade.action === 'BUY'
+                    ? (exitPrice - activeTrade.entryPrice) * activeTrade.quantity
+                    : (activeTrade.entryPrice - exitPrice) * activeTrade.quantity;
+                const exitFee = exitPrice * activeTrade.quantity * BACKTEST_CONFIG.BACKTEST_FEE_RATE;
+                const netPnl = grossPnl - activeTrade.entryFee - exitFee;
+
+                equity += grossPnl - exitFee;
+                totalFees += exitFee;
+                totalSlippageCost += Math.abs(exitPrice - exitResult.exitPrice) * activeTrade.quantity;
+                minEquity = Math.min(minEquity, equity);
                 
                 // v4 FIX: removed equity floor for honest drawdown tracking
-                if (exitResult.pnl < 0) {
+                if (netPnl < 0) {
                     consecutiveLosses++;
+                    dailyLossCount++;
                     if (consecutiveLosses >= 2) { cooldownCandles = 3; consecutiveLosses = 0; }
                 } else {
                     consecutiveLosses = 0;
                     cooldownCandles = 0;
                 }
 
-                activeTrade.pnl = exitResult.pnl;
+                activeTrade.pnl = netPnl;
+                activeTrade.grossPnl = grossPnl;
+                activeTrade.fees = activeTrade.entryFee + exitFee;
                 activeTrade.exitTimestamp = currentCandle.timestamp;
                 activeTrade.exitReason = exitResult.exitReason;
-                activeTrade.exitPrice = exitResult.exitPrice;
+                activeTrade.exitPrice = exitPrice;
                 activeTrade.status = 'CLOSED';
                 activeTrade.equityAfter = equity;
                 trades.push({ ...activeTrade });
@@ -167,6 +273,16 @@ async function runBacktest() {
             // v4: Widened session window 6AM-6PM UTC for more opportunities
             const isSessionOpen = (timeInMinutes >= 6 * 60 && timeInMinutes <= 18 * 60);
 
+            if (dailyLossCount >= BACKTEST_CONFIG.MAX_DAILY_LOSSES) {
+                recordSkip(`Daily loss limit reached (${BACKTEST_CONFIG.MAX_DAILY_LOSSES})`);
+                continue;
+            }
+
+            if (dailyTradeCount >= BACKTEST_CONFIG.DAILY_TRADE_LIMIT) {
+                recordSkip(`Daily trade limit reached (${BACKTEST_CONFIG.DAILY_TRADE_LIMIT})`);
+                continue;
+            }
+
             if (isNewsDay(currentCandle.timestamp)) {
                 newsSkipCount++;
                 continue;
@@ -178,27 +294,35 @@ async function runBacktest() {
                 if (analysis.signal === 'BUY' || analysis.signal === 'SELL') {
                     const rp = analysis.details.riskCalculator;
                     
-                    let baseBalance = 50;
-                    if (equity >= 100) {
-                        while (baseBalance * 2 <= equity) {
-                            baseBalance *= 2;
-                        }
-                    }
-                    
-                    const riskAmount = baseBalance * 0.05;
                     const sl = analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short;
-                    const slDistance = Math.max(Math.abs(currentCandle.open - sl), 0.1);
-                    const rawQuantity = riskAmount / slDistance;
-                    const quantity = parseFloat(Math.min(0.04, Math.max(0.001, rawQuantity)).toFixed(5));
+                    const rawEntryPrice = currentCandle.open;
+                    const entryPrice = analysis.signal === 'BUY'
+                        ? rawEntryPrice * (1 + BACKTEST_CONFIG.BACKTEST_SLIPPAGE_RATE + BACKTEST_CONFIG.BACKTEST_SPREAD_RATE / 2)
+                        : rawEntryPrice * (1 - BACKTEST_CONFIG.BACKTEST_SLIPPAGE_RATE - BACKTEST_CONFIG.BACKTEST_SPREAD_RATE / 2);
+                    const size = calculatePositionSize({ equity, entryPrice, stopLoss: sl });
+                    if (!size.allowed) {
+                        recordSkip(size.reason);
+                        continue;
+                    }
+                    const entryFee = entryPrice * size.quantity * BACKTEST_CONFIG.BACKTEST_FEE_RATE;
+                    equity -= entryFee;
+                    totalFees += entryFee;
+                    totalSlippageCost += Math.abs(entryPrice - rawEntryPrice) * size.quantity;
+                    minEquity = Math.min(minEquity, equity);
+
                     activeTrade = {
                         id: trades.length + 1,
                         action: analysis.signal,
-                        entryPrice: currentCandle.open,
-                        quantity,
+                        entryPrice,
+                        quantity: size.quantity,
                         sl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
                         originalSl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
                         partialTp: analysis.signal === 'BUY' ? rp.takeProfit.partialLong : rp.takeProfit.partialShort,
+                        finalTp: analysis.signal === 'BUY' ? rp.takeProfit.finalLong : rp.takeProfit.finalShort,
                         partialClosed: false,
+                        entryFee,
+                        riskAmount: size.riskAmount,
+                        actualRisk: size.actualRisk,
                         atr: rp.atr,
                         score: analysis.score,
                         confluence: analysis.details.confluenceScorer?.details || '',
@@ -207,6 +331,7 @@ async function runBacktest() {
                         timestamp: currentCandle.timestamp,
                         status: 'OPEN'
                     };
+                    dailyTradeCount++;
                 }
             }
         }
@@ -220,6 +345,12 @@ async function runBacktest() {
     const totalProfit = wins.reduce((s, t) => s + t.pnl, 0);
     const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
     const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? 5 : 0;
+    const averageWin = wins.length > 0 ? totalProfit / wins.length : 0;
+    const averageLoss = losses.length > 0 ? totalLoss / losses.length : 0;
+    const expectancy = completedTrades.length > 0 ? (winRate * averageWin) - ((1 - winRate) * averageLoss) : 0;
+    const averageRMultiple = completedTrades.length > 0
+        ? completedTrades.reduce((sum, t) => sum + (t.pnl / (t.actualRisk || t.riskAmount || 1)), 0) / completedTrades.length
+        : 0;
 
     let peak = initialEquity, maxDrawdown = 0;
     equityCurve.forEach(p => {
@@ -251,19 +382,24 @@ async function runBacktest() {
     console.log(`Min Equity:          $${minEquity.toFixed(2)}`);
     console.log(`Net Profit:          $${(equity - initialEquity).toFixed(2)}`);
     console.log(`News Days Skipped:   ${newsSkipCount} candles`);
+    console.log(`Total Fees:          $${totalFees.toFixed(2)}`);
+    console.log(`Slippage Cost:       $${totalSlippageCost.toFixed(2)}`);
+    console.log(`Expectancy:          $${expectancy.toFixed(2)}`);
+    console.log(`Average R:           ${averageRMultiple.toFixed(2)}R`);
 
     console.log('\n' + '-'.repeat(55));
     console.log('         TRADE STATISTICS');
     console.log('-'.repeat(55));
     console.log(`Total Profit:  $${totalProfit.toFixed(2)}`);
     console.log(`Total Loss:    $${totalLoss.toFixed(2)}`);
-    console.log(`Avg Win:       $${(wins.length > 0 ? totalProfit / wins.length : 0).toFixed(2)}`);
-    console.log(`Avg Loss:      $${(losses.length > 0 ? totalLoss / losses.length : 0).toFixed(2)}`);
+    console.log(`Avg Win:       $${averageWin.toFixed(2)}`);
+    console.log(`Avg Loss:      $${averageLoss.toFixed(2)}`);
     console.log(`BUY Trades:    ${completedTrades.filter(t => t.action === 'BUY').length}`);
     console.log(`SELL Trades:   ${completedTrades.filter(t => t.action === 'SELL').length}`);
     console.log(`TP Hits:       ${completedTrades.filter(t => t.exitReason === 'Take Profit').length}`);
     console.log(`SL Hits:       ${completedTrades.filter(t => t.exitReason === 'Stop Loss').length}`);
     console.log(`Trail SL:      ${completedTrades.filter(t => t.exitReason.includes('Trailing')).length}`);
+    console.log(`Skipped Gates: ${Object.entries(skippedReasons).map(([reason, count]) => `${reason}: ${count}`).join(' | ') || 'None'}`);
 
     console.log('\n' + '-'.repeat(55));
     console.log('         ALL TRADES');
@@ -286,7 +422,8 @@ async function runBacktest() {
     console.log('✓ OB/FVG: tracks bullish vs bearish separately');
     console.log('✓ News day filter (FOMC, CPI, NFP dates skipped)');
     console.log('✓ NO equity floor (honest drawdown tracking)');
-    console.log(`✓ TP adjusted to 1:${strategy.TP1_RR} (more realistic)`)
+    console.log(`✓ TP adjusted to 1:${strategy.FINAL_TP_RR} (more realistic)`)
+    console.log('✓ Fees, slippage, spread, and 1% small-account sizing applied')
     console.log('='.repeat(55));
 }
 

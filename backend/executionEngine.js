@@ -4,6 +4,10 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
+const LOT_MIN_BTC = 0.01;
+const LOT_MAX_BTC = 0.04;
+const LOT_STEP_BTC = 0.01;
+
 class ExecutionEngine {
     constructor(db) {
         // Use provided database for trade logging
@@ -24,6 +28,14 @@ class ExecutionEngine {
 
         // Active trades tracking
         this.activeTrades = new Map();
+        this.trailingStopAtrMultiplier = this._getNumberEnv('TRAILING_STOP_ATR_MULTIPLIER', 2);
+        this.breakevenTriggerRr = this._getNumberEnv('BREAKEVEN_TRIGGER_RR', 1);
+        this.trailingStartRr = this._getNumberEnv('TRAILING_START_RR', 1);
+    }
+
+    _getNumberEnv(name, fallback) {
+        const value = Number(process.env[name]);
+        return Number.isFinite(value) ? value : fallback;
     }
 
     /**
@@ -72,11 +84,28 @@ class ExecutionEngine {
         // Simulate trade execution
         const entryPrice = price || 30000;
         const timestamp = new Date();
-        const tradeQuantity = signal.quantity || quantity;
+        const requestedQuantity = Number(signal.quantity ?? quantity);
+
+        if (!Number.isFinite(requestedQuantity)) {
+            return { success: false, reason: 'Invalid trade quantity' };
+        }
+
+        if (requestedQuantity < LOT_MIN_BTC || requestedQuantity > LOT_MAX_BTC) {
+            return { success: false, reason: `Lot size must be between ${LOT_MIN_BTC} and ${LOT_MAX_BTC} BTC` };
+        }
+
+        const lotSteps = Math.round(requestedQuantity / LOT_STEP_BTC);
+        const normalizedQuantity = parseFloat((lotSteps * LOT_STEP_BTC).toFixed(2));
+        if (Math.abs(requestedQuantity - normalizedQuantity) > 1e-9) {
+            return { success: false, reason: 'Lot size must be exactly one of 0.01, 0.02, 0.03, or 0.04 BTC' };
+        }
+
+        const tradeQuantity = normalizedQuantity;
 
         // Use dynamic SL/TP from the signal
         const sl = signal.sl || (action === 'BUY' ? entryPrice - 100 : entryPrice + 100);
         const tp1 = signal.partialTp || (action === 'BUY' ? entryPrice + 300 : entryPrice - 300);
+        const tp2 = signal.finalTp || null;
         const score = signal.score || 0;
         const notes = signal.notes || '';
         const atr = signal.atr || 500;
@@ -85,9 +114,9 @@ class ExecutionEngine {
             const self = this;
             // Log to database
             this.db.run(
-                `INSERT INTO trades (userId, action, entry_price, quantity, timestamp, status, sl, tp1, score, notes, trade_type) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paper')`,
-                [userId, action, entryPrice, tradeQuantity, timestamp.toISOString(), 'OPEN', sl, tp1, score, notes],
+                `INSERT INTO trades (userId, action, entry_price, quantity, timestamp, status, sl, tp1, tp2, score, notes, trade_type) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paper')`,
+                [userId, action, entryPrice, tradeQuantity, timestamp.toISOString(), 'OPEN', sl, tp1, tp2, score, notes],
                 function (err) {
                     if (err) {
                         console.error('Error logging trade to database:', err);
@@ -104,19 +133,19 @@ class ExecutionEngine {
                         quantity: tradeQuantity,
                         timestamp,
                         status: 'OPEN',
-                        sl, tp1, score, notes, atr, partialClosed: false
+                        sl, originalSl: signal.originalSl || sl, tp1, tp2, score, notes, atr, partialClosed: false
                     };
 
                     // Add to active trades
                     self.activeTrades.set(tradeId, trade);
 
                     // Send alert
-                    self._sendAlert(`[${userId}] Trade executed: ${action} ${quantity} BTC at $${entryPrice.toFixed(2)}`);
+                    self._sendAlert(`[${userId}] Trade executed: ${action} ${tradeQuantity} BTC at $${entryPrice.toFixed(2)}`);
 
                     resolve({
                         success: true,
                         trade: trade,
-                        message: `Trade executed: ${action} ${quantity} BTC at $${entryPrice.toFixed(2)}`
+                        message: `Trade executed: ${action} ${tradeQuantity} BTC at $${entryPrice.toFixed(2)}`
                     });
                 }
             );
@@ -142,16 +171,25 @@ class ExecutionEngine {
                     continue; // Skip the rest this tick
                 }
 
+                if (trade.partialClosed && trade.tp2 && currentPrice >= trade.tp2) {
+                    exitPrice = trade.tp2;
+                    exitReason = 'Final TP';
+                }
+
                 // Chandelier Trailing Logic
                 trade.highestPrice = Math.max(trade.highestPrice || trade.entry_price, currentPrice);
-                const chandelierStop = trade.highestPrice - (trade.atr * 2);
-                trade.sl = Math.max(trade.sl, chandelierStop);
+                const trailTrigger = trade.entry_price + ((trade.entry_price - (trade.originalSl || trade.sl)) * this.trailingStartRr);
+                if (trade.highestPrice >= trailTrigger) {
+                    const chandelierStop = trade.highestPrice - (trade.atr * this.trailingStopAtrMultiplier);
+                    trade.sl = Math.max(trade.sl, chandelierStop);
+                }
 
-                if (trade.partialClosed) {
+                const breakevenTrigger = trade.entry_price + ((trade.entry_price - (trade.originalSl || trade.sl)) * this.breakevenTriggerRr);
+                if (trade.partialClosed || trade.highestPrice >= breakevenTrigger) {
                     trade.sl = Math.max(trade.sl, trade.entry_price);
                 }
 
-                if (currentPrice <= trade.sl) {
+                if (exitPrice === null && currentPrice <= trade.sl) {
                     exitPrice = trade.sl;
                     exitReason = trade.sl >= trade.entry_price ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
                 }
@@ -162,16 +200,25 @@ class ExecutionEngine {
                     continue;
                 }
 
+                if (trade.partialClosed && trade.tp2 && currentPrice <= trade.tp2) {
+                    exitPrice = trade.tp2;
+                    exitReason = 'Final TP';
+                }
+
                 // Chandelier Trailing Logic
                 trade.lowestPrice = Math.min(trade.lowestPrice || trade.entry_price, currentPrice);
-                const chandelierStop = trade.lowestPrice + (trade.atr * 2);
-                trade.sl = Math.min(trade.sl, chandelierStop);
+                const trailTrigger = trade.entry_price - (((trade.originalSl || trade.sl) - trade.entry_price) * this.trailingStartRr);
+                if (trade.lowestPrice <= trailTrigger) {
+                    const chandelierStop = trade.lowestPrice + (trade.atr * this.trailingStopAtrMultiplier);
+                    trade.sl = Math.min(trade.sl, chandelierStop);
+                }
 
-                if (trade.partialClosed) {
+                const breakevenTrigger = trade.entry_price - (((trade.originalSl || trade.sl) - trade.entry_price) * this.breakevenTriggerRr);
+                if (trade.partialClosed || trade.lowestPrice <= breakevenTrigger) {
                     trade.sl = Math.min(trade.sl, trade.entry_price);
                 }
 
-                if (currentPrice >= trade.sl) {
+                if (exitPrice === null && currentPrice >= trade.sl) {
                     exitPrice = trade.sl;
                     exitReason = trade.sl <= trade.entry_price ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
                 }

@@ -12,8 +12,8 @@ class AnalysisEngine {
             srDetector: { enabled: true, lookbackPeriods: 100 },
             obFvGScanner: { enabled: true, minObSize: 0.01 },
             chochBosDetector: { enabled: true, timeframe: '5M' },
-            confluenceScorer: { enabled: true, threshold: 7 }, // 7/10 for strict A+ quality
-            riskCalculator: { enabled: true, riskPerTrade: 0.05 }
+            confluenceScorer: { enabled: true, threshold: Number(process.env.MIN_CONFLUENCE_SCORE) || 6 },
+            riskCalculator: { enabled: true, riskPerTrade: (Number(process.env.RISK_PERCENTAGE) || 1) / 100 }
         };
     }
 
@@ -37,9 +37,11 @@ class AnalysisEngine {
             details: {
                 confluenceScorer: result.details.confluenceScorer,
                 riskCalculator: result.details.riskCalculator,
+                qualityFilters: result.details.qualityFilters || [],
                 analysis: {
                     confluenceScorer: result.details.confluenceScorer,
-                    riskCalculator: result.details.riskCalculator
+                    riskCalculator: result.details.riskCalculator,
+                    qualityFilters: result.details.qualityFilters || []
                 },
                 timestamp: result.details.timestamp
             }

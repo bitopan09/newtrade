@@ -31,14 +31,12 @@ const ManualTrade = () => {
             <div className="trade-controls">
                 <div className="input-group">
                     <label>Quantity (BTC)</label>
-                    <input 
-                        type="number" 
-                        step="0.01" 
-                        min="0.01" 
-                        max="10"
-                        value={quantity} 
-                        onChange={(e) => setQuantity(parseFloat(e.target.value) || 0)}
-                    />
+                    <select value={quantity} onChange={(e) => setQuantity(Number(e.target.value))}>
+                        <option value={0.01}>0.01 BTC</option>
+                        <option value={0.02}>0.02 BTC</option>
+                        <option value={0.03}>0.03 BTC</option>
+                        <option value={0.04}>0.04 BTC</option>
+                    </select>
                 </div>
                 <div className="action-buttons">
                     <button 

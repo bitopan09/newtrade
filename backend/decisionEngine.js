@@ -22,12 +22,21 @@ class DecisionEngine {
     constructor() {
         this.analysisEngine = new AnalysisEngine();
         this.dailyTradeTaken = false;
+        this.dailyTradeCount = 0;
         this.dailyLossCount = 0;
         this.lastTradeDate = null;
         this.circuitBreakerActive = false;
+        this.maxDailyLosses = this._getNumberEnv('MAX_DAILY_LOSSES', 1);
+        this.dailyTradeLimit = this._getNumberEnv('DAILY_TRADE_LIMIT', 1);
+        this.minConfluenceScore = this._getNumberEnv('MIN_CONFLUENCE_SCORE', 4);
+        this.sessionStartHour = this._getNumberEnv('BOT_START_HOUR', 0);
+        this.sessionEndHour = this._getNumberEnv('BOT_END_HOUR', 23);
 
-        // Load persistent state (in a real app, this would be from database)
-        this._loadState();
+    }
+
+    _getNumberEnv(name, fallback) {
+        const value = Number(process.env[name]);
+        return Number.isFinite(value) ? value : fallback;
     }
 
     /**
@@ -49,21 +58,21 @@ class DecisionEngine {
         const today = new Date().toDateString();
         if (this.lastTradeDate !== today) {
             this.dailyTradeTaken = false;
+            this.dailyTradeCount = 0;
             this.dailyLossCount = 0;
             this.lastTradeDate = today;
             this.circuitBreakerActive = false;
-            this._saveState();
         }
 
         // Always perform technical analysis first so the live dashboard has real-time score & indicators
         const analysis = this.analysisEngine.analyze(priceData);
 
-        // Check circuit breaker (2-loss rule)
-        if (this.dailyLossCount >= 2) {
+        // Check circuit breaker. Small accounts default to one loss per day.
+        if (this.dailyLossCount >= this.maxDailyLosses) {
             this.circuitBreakerActive = true;
             return {
                 action: 'SKIP',
-                reason: '2-loss circuit breaker activated',
+                reason: `${this.maxDailyLosses}-loss circuit breaker activated`,
                 details: {
                     score: analysis.score,
                     analysis: analysis.details,
@@ -73,25 +82,26 @@ class DecisionEngine {
             };
         }
 
-        // Check daily trade lock (only 1 trade per session)
-        if (this.dailyTradeTaken) {
+        // Check daily trade lock.
+        if (this.dailyTradeCount >= this.dailyTradeLimit) {
             return {
                 action: 'SKIP',
-                reason: 'Daily trade limit reached (1 trade per session)',
+                reason: `Daily trade limit reached (${this.dailyTradeLimit} trade${this.dailyTradeLimit === 1 ? '' : 's'} per session)`,
                 details: {
                     score: analysis.score,
                     analysis: analysis.details,
-                    dailyTradeTaken: this.dailyTradeTaken
+                    dailyTradeTaken: this.dailyTradeTaken,
+                    dailyTradeCount: this.dailyTradeCount
                 }
             };
         }
 
-        // Check session time gate (8:00 AM to 4:00 PM UTC for Asian and active sessions)
+        // Check session time gate.
         const now = new Date();
         const hour = now.getUTCHours();
         const minute = now.getUTCMinutes();
         const timeInMinutes = hour * 60 + minute;
-        const isSessionOpen = (timeInMinutes >= 8 * 60 && timeInMinutes <= 16 * 60); // 8:00 AM - 4:00 PM UTC
+        const isSessionOpen = (timeInMinutes >= this.sessionStartHour * 60 && timeInMinutes <= this.sessionEndHour * 60);
 
         if (!isSessionOpen) {
             return {
@@ -121,14 +131,28 @@ class DecisionEngine {
             };
         }
 
-        // Check if score meets minimum threshold (matches UnifiedStrategy v2)
-        if (analysis.score < 5) {
+        // Check if score meets minimum threshold.
+        if (analysis.score < this.minConfluenceScore) {
             return {
                 action: 'SKIP',
                 reason: `Confluence score too low: ${analysis.score}/10`,
                 details: {
                     score: analysis.score,
-                    threshold: 5,
+                    threshold: this.minConfluenceScore,
+                    analysis: analysis.details
+                }
+            };
+        }
+
+        if (analysis.signal !== 'BUY' && analysis.signal !== 'SELL') {
+            const qualityReasons = analysis.details?.qualityFilters || analysis.details?.analysis?.qualityFilters || [];
+            return {
+                action: 'SKIP',
+                reason: qualityReasons.length > 0
+                    ? `Quality filter blocked trade: ${qualityReasons.join('; ')}`
+                    : 'No executable trade signal after trend filters',
+                details: {
+                    score: analysis.score,
                     analysis: analysis.details
                 }
             };
@@ -162,11 +186,11 @@ class DecisionEngine {
                 this.dailyLossCount++;
             }
 
+            this.dailyTradeCount = Math.max(this.dailyTradeCount, 1);
             this.dailyTradeTaken = true;
-            this._saveState();
 
             // Check if we hit the circuit breaker after this trade
-            if (this.dailyLossCount >= 2) {
+            if (this.dailyLossCount >= this.maxDailyLosses) {
                 this.circuitBreakerActive = true;
             }
         } else {
@@ -174,44 +198,19 @@ class DecisionEngine {
         }
     }
 
-    /**
-     * Load persistent state (simplified - in real app would use database)
-     */
-    _loadState() {
-        try {
-            // In a real implementation, this would load from database or file
-            // For now, we'll just use default values
-            const state = null; // localStorage is client-side only
-            if (state) {
-                const parsed = JSON.parse(state);
-                this.dailyTradeTaken = parsed.dailyTradeTaken || false;
-                this.dailyLossCount = parsed.dailyLossCount || 0;
-                this.lastTradeDate = parsed.lastTradeDate || null;
-                this.circuitBreakerActive = parsed.circuitBreakerActive || false;
-            }
-        } catch (error) {
-            console.error('Error loading state:', error);
+    recordTradeEntry() {
+        const today = new Date().toDateString();
+        if (this.lastTradeDate !== today) {
+            this.dailyTradeCount = 0;
+            this.dailyLossCount = 0;
+            this.lastTradeDate = today;
+            this.circuitBreakerActive = false;
         }
+
+        this.dailyTradeCount++;
+        this.dailyTradeTaken = this.dailyTradeCount > 0;
     }
 
-    /**
-     * Save persistent state (simplified - in real app would use database)
-     */
-    _saveState() {
-        try {
-            // In a real implementation, this would save to database or file
-            // In Node.js backend, we'd use fs or a database
-            const state = {
-                dailyTradeTaken: this.dailyTradeTaken,
-                dailyLossCount: this.dailyLossCount,
-                lastTradeDate: this.lastTradeDate,
-                circuitBreakerActive: this.circuitBreakerActive
-            };
-            // Note: In Node.js backend, we'd use fs or a database
-        } catch (error) {
-            console.error('Error saving state:', error);
-        }
-    }
 }
 
 module.exports = DecisionEngine;

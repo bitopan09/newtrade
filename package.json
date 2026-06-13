@@ -11,7 +11,9 @@
     "build": "cd frontend && npm install && npm run build",
     "dev:backend": "cd backend && PORT=5001 node server.js",
     "dev:frontend": "cd frontend && npm run dev",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node tests/critical.test.js",
+    "test:critical": "node tests/critical.test.js",
+    "validate": "node --check backend/unifiedStrategy.js && node --check backend/decisionEngine.js && node --check backend/tradingBot.js && node --check improved_backtest_cpr.js && npm test && cd frontend && npm run build"
   },
   "keywords": [],
   "author": "",

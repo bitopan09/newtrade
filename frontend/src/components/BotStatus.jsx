@@ -47,7 +47,7 @@ const BotStatus = () => {
             <div className="status-grid">
                 <div className="status-card">
                     <p><strong>Bot Status:</strong> <span className={bot.isRunning ? 'status-online' : 'status-offline'}>{bot.isRunning ? '🟢 ONLINE' : '🔴 OFFLINE'}</span></p>
-                    <p><strong>Daily Trade Taken:</strong> {bot.dailyTradeTaken ? '✅ Yes' : '❌ No'}</p>
+                            <p><strong>Daily Trades:</strong> {bot.dailyTradeCount || 0}/{bot.config?.maxDailyTrades || 1}</p>
                     <p><strong>Live Confluence:</strong> {bot.currentScore}/10 
                         <span style={{ fontSize: '0.8rem', marginLeft: '8px', color: bot.currentSignal === 'NEUTRAL' ? '#94a3b8' : (bot.currentSignal === 'BUY' ? '#4ade80' : '#f87171') }}>
                             ({bot.currentSignal})
@@ -59,7 +59,17 @@ const BotStatus = () => {
                             Last Analysis: {formatTimeIST(bot.lastAnalysisTime, 'date-time')} IST
                         </p>
                     )}
-                    
+
+                    {bot.config && (
+                        <div style={{ marginTop: '10px', padding: '8px', border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '6px', fontSize: '0.76rem', color: '#cbd5e0' }}>
+                            <p><strong>Risk:</strong> {bot.config.riskPercentage}% | <strong>Score:</strong> {bot.config.minConfluenceScore}/10 | <strong>ADX:</strong> {bot.config.adxThreshold}</p>
+                            <p><strong>SL:</strong> {bot.config.atrStopMultiplier}x ATR | <strong>TP:</strong> {bot.config.partialTpRr}R/{bot.config.finalTpRr}R | <strong>Trail:</strong> {bot.config.trailingStartRr}R</p>
+                            <p><strong>Max ATR:</strong> {(bot.config.maxAtrPercentOfPrice * 100).toFixed(2)}% | <strong>Min RR:</strong> {bot.config.minRewardToRisk}R</p>
+                            <p><strong>Session:</strong> {bot.config.sessionUtc}</p>
+                            <p><strong>Lot:</strong> {bot.config.minQuantity}-{bot.config.maxQuantity} BTC | <strong>Daily Losses:</strong> {bot.config.maxDailyLosses}</p>
+                        </div>
+                    )}
+                     
                     <button 
                         onClick={testEmail} 
                         disabled={emailTesting}

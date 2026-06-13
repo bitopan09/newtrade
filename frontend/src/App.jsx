@@ -7,7 +7,7 @@ import Backtester from './components/Backtester';
 import ManualTrade from './components/ManualTrade';
 import ActiveTrades from './components/ActiveTrades';
 import BotStatus from './components/BotStatus';
-import { userId } from './services/api';
+import { API_BASE_URL, apiFetch, userId } from './services/api';
 
 function App() {
     const [clock, setClock] = useState('');
@@ -29,7 +29,7 @@ function App() {
         // Check API connection
         const checkAPI = async () => {
             try {
-                const res = await fetch('/api/price');
+                const res = await apiFetch(`${API_BASE_URL}/price`);
                 if (res.ok) {
                     setApiConnected(true);
                 } else {
@@ -43,7 +43,7 @@ function App() {
         // Check bot status
         const checkBot = async () => {
             try {
-                const res = await fetch('/api/bot/status');
+                const res = await apiFetch(`${API_BASE_URL}/bot/status`);
                 const data = await res.json();
                 setBotOnline(data.bot?.isRunning || false);
             } catch { setBotOnline(false); }

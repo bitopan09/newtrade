@@ -23,13 +23,15 @@ const getOrCreateUserId = () => {
 
 const userId = getOrCreateUserId();
 
+const apiFetch = (url, options = {}) => fetch(url, options);
+
 // Helper function to add user ID to requests
 const withUserId = (data = {}) => ({
     ...data,
     userId: userId
 });
 
-export { userId, API_BASE_URL };
+export { userId, API_BASE_URL, apiFetch };
 
 export const fetchPrice = async () => {
     try {
@@ -49,6 +51,18 @@ export const fetchPrices = async (limit = 100) => {
         return response.data;
     } catch (error) {
         console.error('Error fetching prices:', error);
+        throw error;
+    }
+};
+
+export const fetchCandles = async (limit = 100, granularity = 21600) => {
+    try {
+        const response = await axios.get(`${API_BASE_URL}/candles`, {
+            params: { limit, granularity }
+        });
+        return response.data;
+    } catch (error) {
+        console.error('Error fetching candles:', error);
         throw error;
     }
 };

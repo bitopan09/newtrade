@@ -72,6 +72,41 @@ db.serialize(() => {
     btc_balance REAL
   )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS signal_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    source TEXT DEFAULT 'live',
+    action TEXT,
+    score INTEGER,
+    price REAL,
+    reason TEXT,
+    details TEXT
+  )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS backtest_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId TEXT DEFAULT 'default',
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    days INTEGER,
+    strategy TEXT,
+    config_json TEXT,
+    summary_json TEXT,
+    result_json TEXT,
+    data_source TEXT,
+    candles_used INTEGER,
+    total_trades INTEGER,
+    win_rate REAL,
+    profit_factor REAL,
+    max_drawdown REAL,
+    total_return REAL,
+    final_equity REAL
+  )`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_signal_logs_timestamp ON signal_logs(timestamp)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_trades_user_timestamp ON trades(userId, timestamp)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_prices_timestamp ON prices(timestamp)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_backtest_results_user_timestamp ON backtest_results(userId, timestamp)`);
+
     // Initialize balance for default user if needed
     db.get(`SELECT COUNT(*) as count FROM balance WHERE userId = 'default'`, [], (err, row) => {
         if (!err && row.count === 0) {
@@ -113,7 +148,190 @@ wss.on('connection', (ws) => {
     });
 });
 
+function safeJson(value) {
+    try {
+        return JSON.stringify(value || {});
+    } catch (error) {
+        return JSON.stringify({ error: 'Could not serialize value' });
+    }
+}
+
+function csvEscape(value) {
+    if (value === null || value === undefined) return '';
+    const text = String(value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function buildBacktestSummary(result) {
+    return {
+        totalTrades: result.totalTrades || 0,
+        winRate: result.winRate || 0,
+        profitFactor: result.profitFactor || 0,
+        maxDrawdown: result.maxDrawdown || 0,
+        sharpeRatio: result.sharpeRatio || 0,
+        totalReturn: result.totalReturn || 0,
+        finalEquity: result.finalEquity || 0,
+        totalFees: result.totalFees || 0,
+        totalSlippageCost: result.totalSlippageCost || 0,
+        expectancy: result.expectancy || 0,
+        averageRMultiple: result.averageRMultiple || 0,
+        longestLosingStreak: result.longestLosingStreak || 0,
+        skippedSignals: result.skippedSignals || 0,
+        dataSource: result.dataSource || 'unknown',
+        candlesUsed: result.candlesUsed || 0
+    };
+}
+
+function saveBacktestResult({ userId = 'default', days, strategy, config, result }) {
+    const summary = buildBacktestSummary(result);
+    return new Promise((resolve, reject) => {
+        db.run(
+            `INSERT INTO backtest_results (
+                userId, days, strategy, config_json, summary_json, result_json,
+                data_source, candles_used, total_trades, win_rate, profit_factor,
+                max_drawdown, total_return, final_equity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                userId,
+                days,
+                strategy,
+                safeJson(config),
+                safeJson(summary),
+                safeJson(result),
+                result.dataSource || 'unknown',
+                result.candlesUsed || 0,
+                result.totalTrades || 0,
+                result.winRate || 0,
+                result.profitFactor || 0,
+                result.maxDrawdown || 0,
+                result.totalReturn || 0,
+                result.finalEquity || 0
+            ],
+            function(err) {
+                if (err) reject(err);
+                else resolve(this.lastID);
+            }
+        );
+    });
+}
+
+function buildBacktestCsv(result, label = 'Backtest Results') {
+    const summary = buildBacktestSummary(result);
+    let csv = `${csvEscape(label)}\n`;
+    csv += 'Metric,Value\n';
+    Object.entries(summary).forEach(([key, value]) => {
+        csv += `${csvEscape(key)},${csvEscape(value)}\n`;
+    });
+
+    if (result.skippedReasons && Object.keys(result.skippedReasons).length > 0) {
+        csv += '\nSkipped Reasons\nReason,Count\n';
+        Object.entries(result.skippedReasons).forEach(([reason, count]) => {
+            csv += `${csvEscape(reason)},${csvEscape(count)}\n`;
+        });
+    }
+
+    if (Array.isArray(result.equityCurve)) {
+        csv += '\nEquity Curve\nDay,Timestamp,Equity\n';
+        result.equityCurve.forEach(point => {
+            csv += `${csvEscape(point.day)},${csvEscape(point.timestamp || '')},${csvEscape(Number(point.equity || 0).toFixed(2))}\n`;
+        });
+    }
+
+    if (Array.isArray(result.trades) && result.trades.length > 0) {
+        csv += '\nIndividual Trades\n';
+        csv += 'ID,Entry Timestamp,Exit Timestamp,Action,Quantity,Entry Price,Exit Price,SL,Original SL,TP1,TP2,PnL,Fees,Risk Amount,Actual Risk,Score,Confluence,Exit Reason\n';
+        result.trades.forEach(trade => {
+            csv += [
+                trade.id,
+                trade.entryTimestamp || trade.timestamp || '',
+                trade.exitTimestamp || '',
+                trade.action || '',
+                trade.quantity || '',
+                trade.entryPrice || '',
+                trade.exitPrice || '',
+                trade.sl || '',
+                trade.originalSl || '',
+                trade.tp1 || '',
+                trade.tp2 || '',
+                trade.pnl || '',
+                trade.fees || '',
+                trade.riskAmount || '',
+                trade.actualRisk || '',
+                trade.score || '',
+                trade.confluence || '',
+                trade.exitReason || ''
+            ].map(csvEscape).join(',') + '\n';
+        });
+    }
+
+    return csv;
+}
+
+function parseBacktestRow(row) {
+    const parse = (value, fallback) => {
+        try {
+            return value ? JSON.parse(value) : fallback;
+        } catch (error) {
+            return fallback;
+        }
+    };
+
+    return {
+        ...row,
+        config: parse(row.config_json, {}),
+        summary: parse(row.summary_json, {}),
+        result: parse(row.result_json, {})
+    };
+}
+
+async function fetchCoinbaseCandles({ limit = 100, granularity = 21600 } = {}) {
+    const allowedGranularities = new Set([60, 300, 900, 3600, 21600, 86400]);
+    const safeGranularity = allowedGranularities.has(Number(granularity)) ? Number(granularity) : 21600;
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 300);
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - (safeLimit * safeGranularity);
+
+    const response = await fetch(`https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=${safeGranularity}&start=${start}&end=${end}`, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/json'
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`Coinbase candles request failed: ${response.status}`);
+    }
+
+    const json = await response.json();
+    if (!Array.isArray(json) || json.length === 0) {
+        throw new Error('Coinbase returned no candle data');
+    }
+
+    return json.map(candle => ({
+        timestamp: new Date(candle[0] * 1000).toISOString(),
+        low: Number(candle[1]),
+        high: Number(candle[2]),
+        open: Number(candle[3]),
+        close: Number(candle[4]),
+        volume: Number(candle[5]),
+        source: 'Coinbase',
+        granularity: safeGranularity
+    })).reverse();
+}
+
 // REST API endpoints
+app.get('/api/health', (req, res) => {
+    db.get('SELECT 1 as ok', [], (err, row) => {
+        res.status(err ? 500 : 200).json({
+            status: err ? 'error' : 'ok',
+            timestamp: new Date().toISOString(),
+            database: row?.ok === 1 ? 'ok' : 'error',
+            botRunning: tradingBot.isRunning,
+            activeTrades: tradingBot.executionEngine.activeTrades.size
+        });
+    });
+});
+
 app.get('/api/price', (req, res) => {
     // Get latest price from database
     db.get(`SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1`, [], (err, row) => {
@@ -135,6 +353,19 @@ app.get('/api/prices', (req, res) => {
         }
         res.json(rows);
     });
+});
+
+app.get('/api/candles', async (req, res) => {
+    try {
+        const candles = await fetchCoinbaseCandles({
+            limit: req.query.limit,
+            granularity: req.query.granularity
+        });
+
+        res.json({ source: 'Coinbase', candles });
+    } catch (error) {
+        res.status(502).json({ error: error.message });
+    }
 });
 
 app.get('/api/balance', (req, res) => {
@@ -178,6 +409,29 @@ app.get('/api/trades/active', (req, res) => {
             return;
         }
         res.json(rows);
+    });
+});
+
+app.get('/api/signals', (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit || '100', 10), 500);
+    db.all(`SELECT * FROM signal_logs ORDER BY timestamp DESC LIMIT ?`, [limit], (err, rows) => {
+        if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+        }
+
+        res.json(rows.map(row => {
+            let details = null;
+            if (row.details) {
+                try {
+                    details = JSON.parse(row.details);
+                } catch (error) {
+                    details = { raw: row.details };
+                }
+            }
+
+            return { ...row, details };
+        }));
     });
 });
 
@@ -238,21 +492,80 @@ app.get('/api/bot/status', async (req, res) => {
     }
 });
 
-// Backtest endpoint using real data from Binance
 app.post('/api/backtest', async (req, res) => {
     try {
-        const { days, strategy, userId } = req.body;
+        const { days, strategy, config, userId } = req.body;
+        const runDays = parseInt(days || 90, 10);
+        const runStrategy = strategy || 'confluence_scoring';
+        const runConfig = config || {};
+        const user = userId || 'default';
         
-        console.log(`Running backtest for ${days} days using ${strategy} strategy...`);
+        console.log(`Running backtest for ${runDays} days using ${runStrategy} strategy...`);
 
-        // This is a placeholder for real backtesting logic
-        // In a real implementation, you would:
-        // 1. Fetch historical data for the requested period
-        // 2. Run the strategy against this data
-        // 3. Calculate performance metrics
+        const results = await tradingBot.runBacktest(runDays, runStrategy, runConfig);
+        const runId = await saveBacktestResult({ userId: user, days: runDays, strategy: runStrategy, config: runConfig, result: results });
 
-        const results = await tradingBot.runBacktest(days, strategy);
-        
+        res.json({ ...results, runId, saved: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/backtest/results', (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit || '20', 10), 100);
+    const userId = req.query.userId || 'default';
+    db.all(
+        `SELECT id, userId, timestamp, days, strategy, data_source, candles_used, total_trades, win_rate, profit_factor, max_drawdown, total_return, final_equity, config_json, summary_json
+         FROM backtest_results
+         WHERE userId = ? OR userId = 'default'
+         ORDER BY timestamp DESC
+         LIMIT ?`,
+        [userId, limit],
+        (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(rows.map(parseBacktestRow).map(({ result_json, ...row }) => row));
+        }
+    );
+});
+
+app.get('/api/backtest/results/:id', (req, res) => {
+    db.get(`SELECT * FROM backtest_results WHERE id = ?`, [req.params.id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: 'Backtest result not found' });
+        res.json(parseBacktestRow(row));
+    });
+});
+
+app.get('/api/backtest/results/:id/export', (req, res) => {
+    db.get(`SELECT * FROM backtest_results WHERE id = ?`, [req.params.id], (err, row) => {
+        if (err) return res.status(500).send('Error fetching backtest result');
+        if (!row) return res.status(404).send('Backtest result not found');
+
+        const parsed = parseBacktestRow(row);
+        const csv = buildBacktestCsv(parsed.result, `Backtest Run ${parsed.id}`);
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename=backtest_run_${parsed.id}.csv`);
+        res.send(csv);
+    });
+});
+
+app.post('/api/backtest/walk-forward', async (req, res) => {
+    try {
+        const { days, strategy, config, folds } = req.body;
+        const results = await tradingBot.runWalkForwardBacktest(days || 180, strategy || 'confluence_scoring', config || {}, folds || 3);
+        res.json(results);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/backtest/optimize', async (req, res) => {
+    try {
+        const { days, strategy } = req.body;
+
+        console.log(`Running optimization backtest for ${days || 90} days using ${strategy || 'confluence_scoring'} strategy...`);
+
+        const results = await tradingBot.optimizeBacktest(days || 90, strategy || 'confluence_scoring');
         res.json(results);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -458,7 +771,7 @@ schedule.scheduleJob('0 0 * * *', () => {
                     tradesExecuted: rows.length,
                     winningTrades: wins.length,
                     losingTrades: rows.length - wins.length,
-                    totalPnl: rows.reduce((sum, t) => sum + (t.pnl || 0), 0)
+                    totalPnL: rows.reduce((sum, t) => sum + (t.pnl || 0), 0)
                 };
                 emailService.sendDailySummary(summary);
             }

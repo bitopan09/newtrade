@@ -14,22 +14,55 @@
  */
 
 class UnifiedStrategy {
-    constructor() {
-        this.CONFLUENCE_THRESHOLD = 5; // Strict direction-aware scoring means 5/10 is high quality
+    constructor(config = {}) {
+        this.config = config;
+        this.CONFLUENCE_THRESHOLD = this._getNumberEnv('MIN_CONFLUENCE_SCORE', 4);
         this.MAX_SCORE = 10;
         this.DEFAULT_QUANTITY = 0.01;
-        this.LOT_MIN = 0.001;  // Minimum lot size
-        this.LOT_MAX = 0.04;  // Maximum lot size
-        this.PARTIAL_TP_RR = 100.0; // Disabled: Forcing pure Chandelier Trailing Stop for max profits
+        this.LOT_MIN = 0.01;
+        this.LOT_MAX = 0.04;
+        this.LOT_STEP = 0.01;
+        this.PARTIAL_TP_RR = this._getNumberEnv('PARTIAL_TP_RR', 100);
+        this.FINAL_TP_RR = this._getNumberEnv('FINAL_TP_RR', 100);
+        this.MIN_REWARD_TO_RISK = this._getNumberEnv('MIN_REWARD_TO_RISK', 1.5);
+        this.ADX_THRESHOLD = this._getNumberEnv('ADX_THRESHOLD', 18);
+        this.ATR_STOP_MULTIPLIER = this._getNumberEnv('ATR_STOP_MULTIPLIER', 0.05);
+        this.MAX_ATR_PERCENT_OF_PRICE = this._getNumberEnv('MAX_ATR_PERCENT_OF_PRICE', 0.08);
+        this.TRAILING_STOP_ATR_MULTIPLIER = this._getNumberEnv('TRAILING_STOP_ATR_MULTIPLIER', 2);
+        this.TRAILING_START_RR = this._getNumberEnv('TRAILING_START_RR', 1);
+        this.BREAKEVEN_TRIGGER_RR = this._getNumberEnv('BREAKEVEN_TRIGGER_RR', 1);
+        this.ALLOW_LONG_TRADES = this._getBooleanEnv('ALLOW_LONG_TRADES', true);
+        this.ALLOW_SHORT_TRADES = this._getBooleanEnv('ALLOW_SHORT_TRADES', true);
+    }
+
+    _getNumberEnv(name, fallback) {
+        if (this.config[name] !== undefined) {
+            const configValue = Number(this.config[name]);
+            return Number.isFinite(configValue) ? configValue : fallback;
+        }
+
+        const value = Number(process.env[name]);
+        return Number.isFinite(value) ? value : fallback;
+    }
+
+    _getBooleanEnv(name, fallback) {
+        if (this.config[name] !== undefined) {
+            if (typeof this.config[name] === 'boolean') return this.config[name];
+            return String(this.config[name]).toLowerCase() === 'true';
+        }
+
+        if (process.env[name] === undefined) return fallback;
+        return String(process.env[name]).toLowerCase() === 'true';
     }
 
     /**
-     * Clamp a dynamically calculated lot size to the allowed range [0.01, 0.04]
+     * Clamp a dynamically calculated lot size to the configured allowed range.
      * @param {number} rawQuantity - The unclamped calculated quantity
      * @returns {number} Clamped quantity between LOT_MIN and LOT_MAX
      */
     clampLotSize(rawQuantity) {
-        return parseFloat(Math.min(this.LOT_MAX, Math.max(this.LOT_MIN, rawQuantity)).toFixed(5));
+        const cappedQuantity = Math.min(this.LOT_MAX, Math.max(this.LOT_MIN, rawQuantity));
+        return parseFloat((Math.floor((cappedQuantity + 1e-9) / this.LOT_STEP) * this.LOT_STEP).toFixed(2));
     }
 
     // ==================== INDICATOR CALCULATIONS ====================
@@ -436,28 +469,23 @@ class UnifiedStrategy {
             bearScore++; bearDetails.push('CPR bearish');
         }
 
-        // 6. Liquidity Sweeps (Highest probability setup) - Institutional entry
-        const liqSweep = this.detectLiquiditySweep(priceData);
-        if (liqSweep.sweepType === 'BULLISH') {
+        // Factor 5: Liquidity sweeps (institutional stop-run detection)
+        if (liquidity.signal === 'BULLISH') {
             bullScore += 2; // Bonus points for sweep
             bullDetails.push('Liq sweep bull');
-        } else if (liqSweep.sweepType === 'BEARISH') {
+            if (liquidity.isWyckoffConfirmed) { bullScore++; bullDetails.push('Wyckoff bonus'); }
+        } else if (liquidity.signal === 'BEARISH') {
             bearScore += 2; // Bonus points for sweep
             bearDetails.push('Liq sweep bear');
+            if (liquidity.isWyckoffConfirmed) { bearScore++; bearDetails.push('Wyckoff bonus'); }
         }
 
-        // Factor 5: VWAP — v2 FIX: only count when price is near VWAP (proximity check)
+        // Factor 6: VWAP — v2 FIX: only count when price is near VWAP (proximity check)
         if (vwap.signal === 'BULLISH') {
             bullScore++; bullDetails.push('VWAP aligned');
         }
         if (vwap.signal === 'BEARISH') {
             bearScore++; bearDetails.push('VWAP aligned');
-        }
-
-        if (liquidity.signal === 'BEARISH') {
-            bearScore++;
-            bearDetails.push(liquidity.isWyckoffConfirmed ? 'Wyckoff bear' : 'Liq sweep bear');
-            if (liquidity.isWyckoffConfirmed) { bearScore++; bearDetails.push('Wyckoff bonus'); }
         }
 
         // Factor 7: OTE Zone (Fibonacci 62-79%)
@@ -522,9 +550,8 @@ class UnifiedStrategy {
             const emaBullish = ema9Val > ema21Val && currentPrice > indicators.ema50Val;
             const emaBearish = ema9Val < ema21Val && currentPrice < indicators.ema50Val;
 
-            // v4 TUNING: ADX regime filter — lowered to 18 for more trade opportunities
             const adx = this.calculateAdx(priceData, 14);
-            const isTrending = adx > 18;
+            const isTrending = adx >= this.ADX_THRESHOLD;
 
             // v3 TUNING: EMA200 macro trend bias
             const ema200 = this.calculateEma(prices, Math.min(prices.length - 1, 50));
@@ -533,13 +560,13 @@ class UnifiedStrategy {
             const macroTrendBearish = currentPrice < ema200Val;
 
             if (isTrending) {
-                if (dominantDirection === 'BULLISH' && emaBullish && macroTrendBullish) signal = 'BUY';
-                else if (dominantDirection === 'BEARISH' && emaBearish && macroTrendBearish) signal = 'SELL';
+                if (this.ALLOW_LONG_TRADES && dominantDirection === 'BULLISH' && emaBullish && macroTrendBullish) signal = 'BUY';
+                else if (this.ALLOW_SHORT_TRADES && dominantDirection === 'BEARISH' && emaBearish && macroTrendBearish) signal = 'SELL';
             }
         }
 
-        // Calculate risk parameters — pass score for conviction-based TP
         const riskParams = this.calculateRiskParameters(priceData, indicators, confluence.score);
+        const qualityFilters = [];
 
         return {
             signal,
@@ -547,6 +574,7 @@ class UnifiedStrategy {
             details: {
                 confluenceScorer: confluence,
                 riskCalculator: riskParams,
+                qualityFilters,
                 timestamp: new Date().toISOString()
             }
         };
@@ -565,18 +593,22 @@ class UnifiedStrategy {
             const buffer = atr * 0.3;
             slDistance = Math.abs(currentPrice - liquidity.sweepLevel) + buffer;
         } else if (cpr.bc && cpr.tc) {
-            slDistance = Math.max(Math.abs(currentPrice - cpr.bc), Math.abs(cpr.tc - currentPrice), atr * 1.5);
+            slDistance = Math.max(Math.abs(currentPrice - cpr.bc), Math.abs(cpr.tc - currentPrice), atr * this.ATR_STOP_MULTIPLIER);
         } else {
-            slDistance = atr * 1.5;
+            slDistance = atr * this.ATR_STOP_MULTIPLIER;
         }
-        slDistance = Math.max(slDistance, atr * 0.5);
-        slDistance = Math.min(slDistance, atr * 2.0);
+        const minAtrDistance = atr * Math.min(this.ATR_STOP_MULTIPLIER, 0.5);
+        const maxAtrDistance = atr * Math.max(this.ATR_STOP_MULTIPLIER, minAtrDistance / Math.max(atr, 0.000001));
+        slDistance = Math.max(slDistance, minAtrDistance);
+        slDistance = Math.min(slDistance, maxAtrDistance);
 
-        // Veteran logic: Partial TP at 1.2RR, no hard TP1/TP2
         const partialTpDistance = slDistance * this.PARTIAL_TP_RR;
+        const finalTpDistance = slDistance * this.FINAL_TP_RR;
 
         return {
             atr,
+            atrPercent: currentPrice > 0 ? atr / currentPrice : 0,
+            maxAtrPercentOfPrice: this.MAX_ATR_PERCENT_OF_PRICE,
             slDistance,
             stopLoss: {
                 long: currentPrice - slDistance,
@@ -584,9 +616,11 @@ class UnifiedStrategy {
             },
             takeProfit: {
                 partialLong: currentPrice + partialTpDistance,
-                partialShort: currentPrice - partialTpDistance
+                partialShort: currentPrice - partialTpDistance,
+                finalLong: currentPrice + finalTpDistance,
+                finalShort: currentPrice - finalTpDistance
             },
-            riskReward: { partial: this.PARTIAL_TP_RR }
+            riskReward: { partial: this.PARTIAL_TP_RR, final: this.FINAL_TP_RR }
         };
     }
 
@@ -598,23 +632,29 @@ class UnifiedStrategy {
         if (activeTrade.action === 'BUY') {
             // Chandelier Exit Logic
             activeTrade.highestPrice = Math.max(activeTrade.highestPrice || activeTrade.entryPrice, currentCandle.high);
-            const chandelierStop = activeTrade.highestPrice - (atr * 2);
+            const trailTrigger = activeTrade.entryPrice + ((activeTrade.entryPrice - activeTrade.originalSl) * this.TRAILING_START_RR);
 
-            // Only trail UP
-            activeTrade.sl = Math.max(activeTrade.sl, chandelierStop);
+            if (activeTrade.highestPrice >= trailTrigger) {
+                const chandelierStop = activeTrade.highestPrice - (atr * this.TRAILING_STOP_ATR_MULTIPLIER);
+                activeTrade.sl = Math.max(activeTrade.sl, chandelierStop);
+            }
 
             // If partial closed, SL must be AT LEAST break-even
-            if (activeTrade.partialClosed) {
+            const breakevenTrigger = activeTrade.entryPrice + ((activeTrade.entryPrice - activeTrade.originalSl) * this.BREAKEVEN_TRIGGER_RR);
+            if (activeTrade.partialClosed || activeTrade.highestPrice >= breakevenTrigger) {
                 activeTrade.sl = Math.max(activeTrade.sl, activeTrade.entryPrice);
             }
         } else {
             activeTrade.lowestPrice = Math.min(activeTrade.lowestPrice || activeTrade.entryPrice, currentCandle.low);
-            const chandelierStop = activeTrade.lowestPrice + (atr * 2);
+            const trailTrigger = activeTrade.entryPrice - ((activeTrade.originalSl - activeTrade.entryPrice) * this.TRAILING_START_RR);
 
-            // Only trail DOWN
-            activeTrade.sl = Math.min(activeTrade.sl, chandelierStop);
+            if (activeTrade.lowestPrice <= trailTrigger) {
+                const chandelierStop = activeTrade.lowestPrice + (atr * this.TRAILING_STOP_ATR_MULTIPLIER);
+                activeTrade.sl = Math.min(activeTrade.sl, chandelierStop);
+            }
 
-            if (activeTrade.partialClosed) {
+            const breakevenTrigger = activeTrade.entryPrice - ((activeTrade.originalSl - activeTrade.entryPrice) * this.BREAKEVEN_TRIGGER_RR);
+            if (activeTrade.partialClosed || activeTrade.lowestPrice <= breakevenTrigger) {
                 activeTrade.sl = Math.min(activeTrade.sl, activeTrade.entryPrice);
             }
         }
@@ -624,15 +664,13 @@ class UnifiedStrategy {
     // ==================== UNIFIED TRADE EXIT CHECK ====================
 
     checkTradeExit(activeTrade, currentCandle) {
-        this.applyTrailingStop(activeTrade, currentCandle);
-
         if (activeTrade.action === 'BUY') {
-            // Partial TP
-            if (!activeTrade.partialClosed && currentCandle.high >= activeTrade.partialTp) {
-                return { closed: false, partialClose: true, exitPrice: activeTrade.partialTp };
-            }
-            // Final SL or Trailing Exit
-            if (currentCandle.low <= activeTrade.sl) {
+            const hitPartialTp = !activeTrade.partialClosed && currentCandle.high >= activeTrade.partialTp;
+            const hitFinalTp = activeTrade.partialClosed && activeTrade.finalTp && currentCandle.high >= activeTrade.finalTp;
+            const hitStop = currentCandle.low <= activeTrade.sl;
+
+            // Conservative candle assumption: if TP and SL are both touched, SL happened first.
+            if (hitStop) {
                 return { 
                     closed: true, 
                     exitPrice: activeTrade.sl, 
@@ -640,13 +678,25 @@ class UnifiedStrategy {
                     pnl: (activeTrade.sl - activeTrade.entryPrice) * activeTrade.quantity 
                 };
             }
-        } else {
-            // Partial TP
-            if (!activeTrade.partialClosed && currentCandle.low <= activeTrade.partialTp) {
+
+            if (hitPartialTp) {
                 return { closed: false, partialClose: true, exitPrice: activeTrade.partialTp };
             }
-            // Final SL or Trailing Exit
-            if (currentCandle.high >= activeTrade.sl) {
+
+            if (hitFinalTp) {
+                return {
+                    closed: true,
+                    exitPrice: activeTrade.finalTp,
+                    exitReason: 'Final TP',
+                    pnl: (activeTrade.finalTp - activeTrade.entryPrice) * activeTrade.quantity
+                };
+            }
+        } else {
+            const hitPartialTp = !activeTrade.partialClosed && currentCandle.low <= activeTrade.partialTp;
+            const hitFinalTp = activeTrade.partialClosed && activeTrade.finalTp && currentCandle.low <= activeTrade.finalTp;
+            const hitStop = currentCandle.high >= activeTrade.sl;
+
+            if (hitStop) {
                 return { 
                     closed: true, 
                     exitPrice: activeTrade.sl, 
@@ -654,8 +704,22 @@ class UnifiedStrategy {
                     pnl: (activeTrade.entryPrice - activeTrade.sl) * activeTrade.quantity 
                 };
             }
+
+            if (hitPartialTp) {
+                return { closed: false, partialClose: true, exitPrice: activeTrade.partialTp };
+            }
+
+            if (hitFinalTp) {
+                return {
+                    closed: true,
+                    exitPrice: activeTrade.finalTp,
+                    exitReason: 'Final TP',
+                    pnl: (activeTrade.entryPrice - activeTrade.finalTp) * activeTrade.quantity
+                };
+            }
         }
 
+        this.applyTrailingStop(activeTrade, currentCandle);
         return { closed: false };
     }
 }
