@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { archiveTerminal, createTerminal, fetchTerminals, restoreTerminal, selectTerminal, setTerminalPin } from '../services/api';
+import bullseyeLogo from '../assets/bullseye-logo.webp';
 
 const TerminalSelector = ({ onSelect, onCancel, currentTerminal = null, mode = 'entry' }) => {
     const [terminals, setTerminals] = useState([]);
@@ -109,7 +110,9 @@ const TerminalSelector = ({ onSelect, onCancel, currentTerminal = null, mode = '
                 )}
                 <div className="terminal-selector-hero">
                     <div className="terminal-selector-heading">
-                        <div className="terminal-brand-mark">B</div>
+                        <div className="terminal-brand-mark">
+                            <img src={bullseyeLogo} alt="Bullseye" />
+                        </div>
                         <div>
                             <div className="terminal-kicker">{isSwitchMode ? 'Switch Terminal' : 'Paper Trading Workspace'}</div>
                             <h1>{isSwitchMode ? 'Choose Profile' : 'Bullseye'}</h1>

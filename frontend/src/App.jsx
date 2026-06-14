@@ -8,6 +8,7 @@ import ManualTrade from './components/ManualTrade';
 import ActiveTrades from './components/ActiveTrades';
 import BotStatus from './components/BotStatus';
 import TerminalSelector from './components/TerminalSelector';
+import bullseyeLogo from './assets/bullseye-logo.webp';
 import { API_BASE_URL, apiFetch, clearSelectedTerminal, getCurrentUserId, getSelectedTerminal, getTerminalAccessToken } from './services/api';
 
 function App() {
@@ -84,7 +85,9 @@ function App() {
         <div className="App" key={activeUserId}>
             <header className="app-header">
                 <div className="header-brand">
-                    <div className="header-logo">B</div>
+                    <div className="header-logo">
+                        <img src={bullseyeLogo} alt="Bullseye" />
+                    </div>
                     <div>
                         <div className="header-title">Bullseye</div>
                         <div className="header-subtitle">BTC/USD Paper Trading Terminal</div>
