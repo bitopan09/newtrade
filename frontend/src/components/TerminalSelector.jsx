@@ -1,10 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { archiveTerminal, createTerminal, fetchTerminals, restoreTerminal, selectTerminal } from '../services/api';
+import { archiveTerminal, createTerminal, fetchTerminals, restoreTerminal, selectTerminal, setTerminalPin } from '../services/api';
 
 const TerminalSelector = ({ onSelect }) => {
     const [terminals, setTerminals] = useState([]);
     const [showArchived, setShowArchived] = useState(false);
     const [displayName, setDisplayName] = useState('');
+    const [createPin, setCreatePin] = useState('');
+    const [confirmPin, setConfirmPin] = useState('');
+    const [termsAccepted, setTermsAccepted] = useState(false);
+    const [terminalPins, setTerminalPins] = useState({});
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
@@ -29,36 +33,61 @@ const TerminalSelector = ({ onSelect }) => {
         event.preventDefault();
         const name = displayName.trim();
         if (!name) return;
+        if (createPin !== confirmPin) {
+            setError('PIN confirmation does not match');
+            return;
+        }
 
         try {
-            const terminal = await createTerminal({ displayName: name });
-            const selected = await selectTerminal(terminal.userId);
+            const terminal = await createTerminal({ displayName: name, pin: createPin, termsAccepted });
+            const selected = await selectTerminal(terminal.userId, createPin);
             onSelect(selected);
         } catch (createError) {
             setError(createError.response?.data?.error || 'Could not create terminal');
         }
     };
 
-    const handleSelect = async (terminal) => {
+    const terminalPin = (terminal) => terminalPins[terminal.userId] || '';
+
+    const updateTerminalPin = (terminal, value) => {
+        setTerminalPins(prev => ({ ...prev, [terminal.userId]: value.replace(/\D/g, '').slice(0, 8) }));
+    };
+
+    const handleSelect = async (event, terminal) => {
+        event.preventDefault();
         if (terminal.archived) return;
         try {
-            const selected = await selectTerminal(terminal.userId);
+            const selected = await selectTerminal(terminal.userId, terminalPin(terminal));
             onSelect(selected);
         } catch (selectError) {
             setError(selectError.response?.data?.error || 'Could not select terminal');
         }
     };
 
+    const handleSetLegacyPin = async (event, terminal) => {
+        event.preventDefault();
+        if (!termsAccepted) {
+            setError('Accept the terminal access terms before setting a PIN');
+            return;
+        }
+        try {
+            await setTerminalPin(terminal.userId, { pin: terminalPin(terminal), termsAccepted });
+            await loadTerminals();
+        } catch (pinError) {
+            setError(pinError.response?.data?.error || 'Could not set terminal PIN');
+        }
+    };
+
     const handleArchive = async (event, terminal) => {
         event.stopPropagation();
         if (!window.confirm(`Archive ${terminal.displayName}? Data will be kept and can be restored later.`)) return;
-        await archiveTerminal(terminal.userId);
+        await archiveTerminal(terminal.userId, terminalPin(terminal));
         loadTerminals();
     };
 
     const handleRestore = async (event, terminal) => {
         event.stopPropagation();
-        await restoreTerminal(terminal.userId);
+        await restoreTerminal(terminal.userId, terminalPin(terminal));
         loadTerminals();
     };
 
@@ -120,26 +149,42 @@ const TerminalSelector = ({ onSelect }) => {
                             <span>Create your first $50 Bullseye paper terminal to begin.</span>
                         </div>
                     ) : visibleTerminals.map(terminal => (
-                        <button
+                        <form
                             key={terminal.userId}
                             className={`terminal-card ${terminal.archived ? 'archived' : ''}`}
-                            onClick={() => handleSelect(terminal)}
+                            onSubmit={(event) => terminal.hasPin ? handleSelect(event, terminal) : handleSetLegacyPin(event, terminal)}
                         >
                             <div className="terminal-card-topline">
-                                <span>{terminal.archived ? 'Archived' : 'Ready'}</span>
-                                <span>{terminal.archived ? 'Restore to use' : 'Open terminal'}</span>
+                                <span>{terminal.archived ? 'Archived' : terminal.hasPin ? 'PIN locked' : 'PIN setup'}</span>
+                                <span>{terminal.archived ? 'Restore to use' : terminal.hasPin ? 'Protected' : 'Required'}</span>
                             </div>
                             <div className="terminal-avatar" style={{ borderColor: terminal.avatarColor, color: terminal.avatarColor }}>
                                 {terminal.avatarInitial || terminal.displayName?.charAt(0) || 'B'}
                             </div>
                             <div className="terminal-name">{terminal.displayName}</div>
                             <div className="terminal-meta">$50 paper balance</div>
-                            {terminal.archived ? (
-                                <span className="terminal-card-action restore" onClick={(event) => handleRestore(event, terminal)}>Restore</span>
-                            ) : (
-                                <span className="terminal-card-action" onClick={(event) => handleArchive(event, terminal)}>Archive</span>
+                            <input
+                                className="terminal-pin-input"
+                                value={terminalPin(terminal)}
+                                onChange={(event) => updateTerminalPin(terminal, event.target.value)}
+                                placeholder={terminal.hasPin ? 'Enter PIN' : 'Create PIN'}
+                                inputMode="numeric"
+                                type="password"
+                                maxLength={8}
+                                autoComplete="off"
+                            />
+                            {!terminal.hasPin && <div className="terminal-meta">Accept terms below, then set a PIN for this existing terminal.</div>}
+                            {!terminal.archived && (
+                                <button className="terminal-open-button" type="submit" disabled={terminalPin(terminal).length < 4}>
+                                    {terminal.hasPin ? 'Open Terminal' : 'Set PIN'}
+                                </button>
                             )}
-                        </button>
+                            {terminal.archived ? (
+                                <button type="button" className="terminal-card-action restore" onClick={(event) => handleRestore(event, terminal)} disabled={terminalPin(terminal).length < 4}>Restore</button>
+                            ) : (
+                                <button type="button" className="terminal-card-action" onClick={(event) => handleArchive(event, terminal)}>Archive</button>
+                            )}
+                        </form>
                     ))}
 
                     <form className="terminal-card terminal-create-card" onSubmit={handleCreate}>
@@ -152,12 +197,40 @@ const TerminalSelector = ({ onSelect }) => {
                             placeholder="New terminal name"
                             maxLength={40}
                         />
-                        <button type="submit" disabled={!displayName.trim()}>Create Terminal</button>
+                        <input
+                            className="terminal-pin-input"
+                            value={createPin}
+                            onChange={(event) => setCreatePin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                            placeholder="Create 4-8 digit PIN"
+                            inputMode="numeric"
+                            type="password"
+                            maxLength={8}
+                            autoComplete="new-password"
+                        />
+                        <input
+                            className="terminal-pin-input"
+                            value={confirmPin}
+                            onChange={(event) => setConfirmPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                            placeholder="Confirm PIN"
+                            inputMode="numeric"
+                            type="password"
+                            maxLength={8}
+                            autoComplete="new-password"
+                        />
+                        <label className="terminal-terms-check">
+                            <input
+                                type="checkbox"
+                                checked={termsAccepted}
+                                onChange={(event) => setTermsAccepted(event.target.checked)}
+                            />
+                            <span>I understand this terminal is PIN-protected, I am responsible for keeping the PIN private, and I must not access another person’s terminal without permission.</span>
+                        </label>
+                        <button type="submit" disabled={!displayName.trim() || createPin.length < 4 || createPin !== confirmPin || !termsAccepted}>Create Terminal</button>
                     </form>
                 </div>
 
                 <div className="terminal-selector-footer">
-                    <span>Archive never deletes data. Restoring brings the terminal back with all history intact.</span>
+                    <span>Archive never deletes data. PIN access is required before opening protected balances, trades, backtests, or settings.</span>
                 </div>
             </div>
         </div>

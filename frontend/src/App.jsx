@@ -8,7 +8,7 @@ import ManualTrade from './components/ManualTrade';
 import ActiveTrades from './components/ActiveTrades';
 import BotStatus from './components/BotStatus';
 import TerminalSelector from './components/TerminalSelector';
-import { API_BASE_URL, apiFetch, clearSelectedTerminal, getCurrentUserId, getSelectedTerminal } from './services/api';
+import { API_BASE_URL, apiFetch, clearSelectedTerminal, getCurrentUserId, getSelectedTerminal, getTerminalAccessToken } from './services/api';
 
 function App() {
     const [clock, setClock] = useState('');
@@ -46,7 +46,7 @@ function App() {
         // Check bot status
         const checkBot = async () => {
             try {
-                const res = await apiFetch(`${API_BASE_URL}/bot/status?userId=${encodeURIComponent(getCurrentUserId())}`);
+                const res = await apiFetch(`${API_BASE_URL}/bot/status?userId=${encodeURIComponent(getCurrentUserId())}&accessToken=${encodeURIComponent(getTerminalAccessToken())}`);
                 const data = await res.json();
                 setBotOnline(data.bot?.isRunning || false);
             } catch { setBotOnline(false); }

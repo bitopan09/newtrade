@@ -398,6 +398,12 @@ body {
   background: rgba(239, 68, 68, 0.08);
   font-size: 0.72rem;
   font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+.terminal-card-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .terminal-card-action.restore {
@@ -425,6 +431,60 @@ body {
 .terminal-create-card input:focus {
   border-color: rgba(47, 107, 255, 0.62);
   box-shadow: 0 0 0 3px rgba(47, 107, 255, 0.12);
+}
+
+.terminal-pin-input {
+  width: 100%;
+  max-width: 220px;
+  min-height: 40px;
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--text-primary);
+  text-align: center;
+  font-family: var(--font-mono);
+  outline: none;
+}
+
+.terminal-pin-input:focus {
+  border-color: rgba(47, 107, 255, 0.62);
+  box-shadow: 0 0 0 3px rgba(47, 107, 255, 0.12);
+}
+
+.terminal-open-button {
+  min-height: 38px;
+  padding: 9px 14px;
+  border: 1px solid rgba(16, 185, 129, 0.36);
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.13);
+  color: #bbf7d0;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.terminal-open-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.terminal-terms-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.terminal-terms-check input {
+  width: 16px;
+  min-height: 16px;
+  margin-top: 1px;
+  flex: 0 0 auto;
+  accent-color: #2f6bff;
 }
 
 .terminal-selector-footer {

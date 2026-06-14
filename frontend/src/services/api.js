@@ -14,6 +14,7 @@ if (window.location.hostname === 'localhost' || window.location.hostname === '12
 const LEGACY_USER_ID_KEY = 'userId';
 const SELECTED_TERMINAL_ID_KEY = 'selectedTerminalUserId';
 const SELECTED_TERMINAL_KEY = 'selectedTerminal';
+const TERMINAL_ACCESS_TOKEN_KEY = 'selectedTerminalAccessToken';
 
 // Legacy fallback for users who had the old anonymous single-terminal flow.
 const getOrCreateLegacyUserId = () => {
@@ -42,9 +43,16 @@ export const setSelectedTerminal = (terminal) => {
     localStorage.setItem(SELECTED_TERMINAL_KEY, JSON.stringify(terminal));
 };
 
+export const getTerminalAccessToken = () => localStorage.getItem(TERMINAL_ACCESS_TOKEN_KEY) || '';
+
+export const setTerminalAccessToken = (token) => {
+    if (token) localStorage.setItem(TERMINAL_ACCESS_TOKEN_KEY, token);
+};
+
 export const clearSelectedTerminal = () => {
     localStorage.removeItem(SELECTED_TERMINAL_ID_KEY);
     localStorage.removeItem(SELECTED_TERMINAL_KEY);
+    localStorage.removeItem(TERMINAL_ACCESS_TOKEN_KEY);
 };
 
 const userId = getCurrentUserId();
@@ -54,7 +62,17 @@ const apiFetch = (url, options = {}) => fetch(url, options);
 // Helper function to add user ID to requests
 const withUserId = (data = {}) => ({
     ...data,
-    userId: getCurrentUserId()
+    userId: getCurrentUserId(),
+    accessToken: getTerminalAccessToken()
+});
+
+const terminalParams = (params = {}) => ({
+    ...params,
+    accessToken: getTerminalAccessToken()
+});
+
+const terminalHeaders = () => ({
+    'x-terminal-access-token': getTerminalAccessToken()
 });
 
 export { userId, API_BASE_URL, apiFetch };
@@ -69,19 +87,31 @@ export const createTerminal = async (terminalData) => {
     return response.data;
 };
 
-export const selectTerminal = async (terminalUserId) => {
-    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/select`);
-    setSelectedTerminal(response.data);
+export const selectTerminal = async (terminalUserId, pin) => {
+    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/select`, { pin });
+    setSelectedTerminal(response.data.terminal);
+    setTerminalAccessToken(response.data.accessToken);
+    return response.data.terminal;
+};
+
+export const setTerminalPin = async (terminalUserId, data) => {
+    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/pin`, data);
     return response.data;
 };
 
-export const archiveTerminal = async (terminalUserId) => {
-    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/archive`);
+export const archiveTerminal = async (terminalUserId, pin = '') => {
+    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/archive`, {
+        pin,
+        accessToken: getTerminalAccessToken()
+    });
     return response.data;
 };
 
-export const restoreTerminal = async (terminalUserId) => {
-    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/restore`);
+export const restoreTerminal = async (terminalUserId, pin = '') => {
+    const response = await axios.post(`${API_BASE_URL}/terminals/${encodeURIComponent(terminalUserId)}/restore`, {
+        pin,
+        accessToken: getTerminalAccessToken()
+    });
     return response.data;
 };
 
@@ -122,7 +152,8 @@ export const fetchCandles = async (limit = 100, granularity = 21600) => {
 export const fetchBalance = async () => {
     try {
         const response = await axios.get(`${API_BASE_URL}/balance`, {
-            params: { userId: getCurrentUserId() }
+            params: terminalParams({ userId: getCurrentUserId() }),
+            headers: terminalHeaders()
         });
         return response.data;
     } catch (error) {
@@ -134,7 +165,8 @@ export const fetchBalance = async () => {
 export const fetchTrades = async (limit = 50) => {
     try {
         const response = await axios.get(`${API_BASE_URL}/trades`, {
-            params: { limit, userId: getCurrentUserId() }
+            params: terminalParams({ limit, userId: getCurrentUserId() }),
+            headers: terminalHeaders()
         });
         return response.data;
     } catch (error) {
@@ -146,7 +178,8 @@ export const fetchTrades = async (limit = 50) => {
 export const fetchActiveTrades = async () => {
     try {
         const response = await axios.get(`${API_BASE_URL}/trades/active`, {
-            params: { userId: getCurrentUserId() }
+            params: terminalParams({ userId: getCurrentUserId() }),
+            headers: terminalHeaders()
         });
         return response.data;
     } catch (error) {
@@ -175,7 +208,7 @@ export const closeTrade = async (tradeId) => {
     }
 };
 
-export const exportTradesCsvUrl = () => `${API_BASE_URL}/trades/export?userId=${encodeURIComponent(getCurrentUserId())}`;
+export const exportTradesCsvUrl = () => `${API_BASE_URL}/trades/export?userId=${encodeURIComponent(getCurrentUserId())}&accessToken=${encodeURIComponent(getTerminalAccessToken())}`;
 
 export const recordTrade = async (tradeData) => {
     try {

@@ -2,6 +2,7 @@ const crypto = require('crypto');
 
 const DEFAULT_STARTING_BALANCE = 50;
 const AVATAR_COLORS = ['#2f6bff', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+const SESSION_TTL_HOURS = 12;
 
 function dbRun(db, sql, params = []) {
     return new Promise((resolve, reject) => {
@@ -50,6 +51,46 @@ function generateTerminalUserId() {
     return `terminal_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
+function validatePin(pin) {
+    const value = String(pin || '').trim();
+    if (!/^\d{4,8}$/.test(value)) throw new Error('PIN must be 4 to 8 digits');
+    return value;
+}
+
+function hashPin(pin, salt = crypto.randomBytes(16).toString('hex')) {
+    const safePin = validatePin(pin);
+    const hash = crypto.pbkdf2Sync(safePin, salt, 120000, 32, 'sha256').toString('hex');
+    return { salt, hash };
+}
+
+function verifyPin(pin, salt, expectedHash) {
+    if (!salt || !expectedHash) return false;
+    const { hash } = hashPin(pin, salt);
+    const actual = Buffer.from(hash, 'hex');
+    const expected = Buffer.from(expectedHash, 'hex');
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+function hashToken(token) {
+    return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function publicTerminal(row) {
+    if (!row) return null;
+    const { pinHash, pinSalt, ...terminal } = row;
+    return {
+        ...terminal,
+        hasPin: Boolean(pinHash && pinSalt)
+    };
+}
+
+async function ensureColumn(db, table, column, definition) {
+    const columns = await dbAll(db, `PRAGMA table_info(${table})`);
+    if (!columns.some(row => row.name === column)) {
+        await dbRun(db, `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+}
+
 function createTerminalTables(db) {
     const statements = [
         `CREATE TABLE IF NOT EXISTS terminal_profiles (
@@ -58,6 +99,9 @@ function createTerminalTables(db) {
             displayName TEXT NOT NULL,
             avatarInitial TEXT,
             avatarColor TEXT,
+            pinHash TEXT,
+            pinSalt TEXT,
+            termsAcceptedAt DATETIME,
             startingBalance REAL DEFAULT 50,
             archived INTEGER DEFAULT 0,
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -86,11 +130,23 @@ function createTerminalTables(db) {
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )`,
 
+        `CREATE TABLE IF NOT EXISTS terminal_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            userId TEXT NOT NULL,
+            tokenHash TEXT UNIQUE NOT NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expiresAt DATETIME NOT NULL
+        )`,
+
         `CREATE INDEX IF NOT EXISTS idx_terminal_profiles_user_archived ON terminal_profiles(userId, archived)`,
-        `CREATE INDEX IF NOT EXISTS idx_terminal_activity_user_timestamp ON terminal_activity_logs(userId, timestamp)`
+        `CREATE INDEX IF NOT EXISTS idx_terminal_activity_user_timestamp ON terminal_activity_logs(userId, timestamp)`,
+        `CREATE INDEX IF NOT EXISTS idx_terminal_sessions_user_expires ON terminal_sessions(userId, expiresAt)`
     ];
 
-    return statements.reduce((promise, statement) => promise.then(() => dbRun(db, statement)), Promise.resolve());
+    return statements.reduce((promise, statement) => promise.then(() => dbRun(db, statement)), Promise.resolve())
+        .then(() => ensureColumn(db, 'terminal_profiles', 'pinHash', 'TEXT'))
+        .then(() => ensureColumn(db, 'terminal_profiles', 'pinSalt', 'TEXT'))
+        .then(() => ensureColumn(db, 'terminal_profiles', 'termsAcceptedAt', 'DATETIME'));
 }
 
 async function logActivity(db, userId, eventType, event = {}) {
@@ -147,27 +203,30 @@ async function ensureTerminalForUser(db, userId, displayName = 'Terminal') {
 
 async function createTerminal(db, payload = {}) {
     const displayName = normalizeDisplayName(payload.displayName);
+    if (!payload.termsAccepted) throw new Error('You must accept the terminal access terms');
+    const { hash, salt } = hashPin(payload.pin);
     const userId = payload.userId ? String(payload.userId).trim() : generateTerminalUserId();
     const color = payload.avatarColor || defaultAvatarColor(displayName);
 
     await dbRun(
         db,
-        `INSERT INTO terminal_profiles (userId, displayName, avatarInitial, avatarColor, startingBalance)
-         VALUES (?, ?, ?, ?, ?)`,
-        [userId, displayName, avatarInitial(displayName), color, DEFAULT_STARTING_BALANCE]
+        `INSERT INTO terminal_profiles (userId, displayName, avatarInitial, avatarColor, pinHash, pinSalt, termsAcceptedAt, startingBalance)
+         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
+        [userId, displayName, avatarInitial(displayName), color, hash, salt, DEFAULT_STARTING_BALANCE]
     );
 
     await ensureBalance(db, userId, DEFAULT_STARTING_BALANCE);
     await ensureSettings(db, userId);
     await logActivity(db, userId, 'terminal_created', { displayName });
-    return dbGet(db, `SELECT * FROM terminal_profiles WHERE userId = ?`, [userId]);
+    return publicTerminal(await dbGet(db, `SELECT * FROM terminal_profiles WHERE userId = ?`, [userId]));
 }
 
-function listTerminals(db, includeArchived = false) {
-    return dbAll(
+async function listTerminals(db, includeArchived = false) {
+    const rows = await dbAll(
         db,
         `SELECT * FROM terminal_profiles ${includeArchived ? '' : 'WHERE archived = 0'} ORDER BY archived ASC, lastUsedAt DESC, createdAt DESC`
     );
+    return rows.map(publicTerminal);
 }
 
 function getTerminal(db, userId, includeArchived = true) {
@@ -186,7 +245,67 @@ async function selectTerminal(db, userId) {
     await ensureBalance(db, userId, terminal.startingBalance || DEFAULT_STARTING_BALANCE);
     await ensureSettings(db, userId);
     await logActivity(db, userId, 'terminal_selected');
-    return getTerminal(db, userId, false);
+    return publicTerminal(await getTerminal(db, userId, false));
+}
+
+async function authenticateTerminal(db, userId, pin) {
+    const terminal = await getTerminal(db, userId, false);
+    if (!terminal) throw new Error('Terminal not found');
+    verifyTerminalPinRecord(terminal, pin);
+
+    await dbRun(db, `DELETE FROM terminal_sessions WHERE userId = ? AND expiresAt <= CURRENT_TIMESTAMP`, [userId]);
+    const token = crypto.randomBytes(32).toString('hex');
+    await dbRun(
+        db,
+        `INSERT INTO terminal_sessions (userId, tokenHash, expiresAt) VALUES (?, ?, datetime('now', '+' || ? || ' hours'))`,
+        [userId, hashToken(token), SESSION_TTL_HOURS]
+    );
+    const selected = await selectTerminal(db, userId);
+    await logActivity(db, userId, 'terminal_unlocked');
+    return { terminal: selected, accessToken: token, expiresInHours: SESSION_TTL_HOURS };
+}
+
+function verifyTerminalPinRecord(terminal, pin) {
+    if (!terminal.pinHash || !terminal.pinSalt) throw new Error('PIN setup is required before opening this terminal');
+    if (!verifyPin(pin, terminal.pinSalt, terminal.pinHash)) throw new Error('Incorrect PIN');
+    return true;
+}
+
+async function verifyTerminalPin(db, userId, pin, includeArchived = true) {
+    const terminal = await getTerminal(db, userId, includeArchived);
+    if (!terminal) throw new Error('Terminal not found');
+    return verifyTerminalPinRecord(terminal, pin);
+}
+
+async function verifyAccessToken(db, userId, token) {
+    if (!userId || !token) return false;
+    const row = await dbGet(
+        db,
+        `SELECT id FROM terminal_sessions WHERE userId = ? AND tokenHash = ? AND expiresAt > CURRENT_TIMESTAMP LIMIT 1`,
+        [userId, hashToken(token)]
+    );
+    return Boolean(row);
+}
+
+async function setTerminalPin(db, userId, payload = {}) {
+    const terminal = await getTerminal(db, userId, true);
+    if (!terminal) throw new Error('Terminal not found');
+    if (!payload.termsAccepted && !terminal.termsAcceptedAt) throw new Error('You must accept the terminal access terms');
+    if (terminal.pinHash && terminal.pinSalt && !verifyPin(payload.currentPin, terminal.pinSalt, terminal.pinHash)) {
+        throw new Error('Current PIN is incorrect');
+    }
+
+    const { hash, salt } = hashPin(payload.pin);
+    await dbRun(
+        db,
+        `UPDATE terminal_profiles
+         SET pinHash = ?, pinSalt = ?, termsAcceptedAt = COALESCE(termsAcceptedAt, CURRENT_TIMESTAMP)
+         WHERE userId = ?`,
+        [hash, salt, userId]
+    );
+    await dbRun(db, `DELETE FROM terminal_sessions WHERE userId = ?`, [userId]);
+    await logActivity(db, userId, 'terminal_pin_updated');
+    return publicTerminal(await getTerminal(db, userId, true));
 }
 
 async function updateTerminal(db, userId, payload = {}) {
@@ -202,7 +321,7 @@ async function updateTerminal(db, userId, payload = {}) {
         [displayName, avatarInitial(displayName), color, userId]
     );
     await logActivity(db, userId, 'terminal_updated', { displayName, avatarColor: color });
-    return getTerminal(db, userId, true);
+    return publicTerminal(await getTerminal(db, userId, true));
 }
 
 async function archiveTerminal(db, userId) {
@@ -215,7 +334,7 @@ async function archiveTerminal(db, userId) {
         [userId]
     );
     await logActivity(db, userId, 'terminal_archived');
-    return getTerminal(db, userId, true);
+    return publicTerminal(await getTerminal(db, userId, true));
 }
 
 async function restoreTerminal(db, userId) {
@@ -228,7 +347,7 @@ async function restoreTerminal(db, userId) {
         [userId]
     );
     await logActivity(db, userId, 'terminal_restored');
-    return getTerminal(db, userId, true);
+    return publicTerminal(await getTerminal(db, userId, true));
 }
 
 async function getSettings(db, userId) {
@@ -277,6 +396,10 @@ module.exports = {
     listTerminals,
     getTerminal,
     selectTerminal,
+    authenticateTerminal,
+    verifyAccessToken,
+    verifyTerminalPin,
+    setTerminalPin,
     updateTerminal,
     archiveTerminal,
     restoreTerminal,
@@ -288,5 +411,6 @@ module.exports = {
     logActivity,
     dbRun,
     dbGet,
-    dbAll
+    dbAll,
+    publicTerminal
 };

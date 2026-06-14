@@ -253,10 +253,12 @@ async function closeDb(db) {
 async function testTerminalArchiveRestoreAndStartingBalance() {
     const db = await makeTerminalTestDb();
     try {
-        const terminal = await terminalStore.createTerminal(db, { displayName: 'Bitopan' });
+        const terminal = await terminalStore.createTerminal(db, { displayName: 'Bitopan', pin: '1234', termsAccepted: true });
         const balance = await terminalStore.dbGet(db, `SELECT * FROM balance WHERE userId = ?`, [terminal.userId]);
 
         assert.strictEqual(terminal.displayName, 'Bitopan');
+        assert.strictEqual(terminal.hasPin, true);
+        assert.strictEqual(terminal.pinHash, undefined);
         assert.strictEqual(balance.usd_balance, 50);
         assert.strictEqual(balance.btc_balance, 0);
 
@@ -271,6 +273,31 @@ async function testTerminalArchiveRestoreAndStartingBalance() {
         const restored = await terminalStore.listTerminals(db, false);
         assert.strictEqual(restored.length, 1);
         assert.strictEqual(restored[0].archived, 0);
+    } finally {
+        await closeDb(db);
+    }
+}
+
+async function testTerminalPinAccessAndTerms() {
+    const db = await makeTerminalTestDb();
+    try {
+        await assert.rejects(
+            () => terminalStore.createTerminal(db, { displayName: 'No Terms', pin: '1234' }),
+            /accept the terminal access terms/i
+        );
+
+        const terminal = await terminalStore.createTerminal(db, { displayName: 'Protected', pin: '2468', termsAccepted: true });
+
+        await assert.rejects(
+            () => terminalStore.authenticateTerminal(db, terminal.userId, '1357'),
+            /Incorrect PIN/i
+        );
+
+        const session = await terminalStore.authenticateTerminal(db, terminal.userId, '2468');
+        assert.strictEqual(session.terminal.userId, terminal.userId);
+        assert.ok(session.accessToken.length >= 32);
+        assert.strictEqual(await terminalStore.verifyAccessToken(db, terminal.userId, session.accessToken), true);
+        assert.strictEqual(await terminalStore.verifyAccessToken(db, terminal.userId, 'bad-token'), false);
     } finally {
         await closeDb(db);
     }
@@ -305,6 +332,7 @@ async function run() {
         testDecisionEngineDailyTradeLimit,
         testExecutionRejectsOutOfRangeLotSize,
         testTerminalArchiveRestoreAndStartingBalance,
+        testTerminalPinAccessAndTerms,
         testManualExitRejectsOtherTerminalTrade
     ];
 

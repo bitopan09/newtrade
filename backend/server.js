@@ -185,6 +185,31 @@ function buildBacktestSummary(result) {
     };
 }
 
+function terminalAccessToken(req) {
+    return req.get('x-terminal-access-token') || req.body?.accessToken || req.query?.accessToken || '';
+}
+
+async function hasTerminalAccess(req, userId) {
+    return terminalStore.verifyAccessToken(db, userId, terminalAccessToken(req));
+}
+
+async function requireTerminalAccess(req, res, userId) {
+    if (await hasTerminalAccess(req, userId)) return true;
+    res.status(401).json({ error: 'Terminal PIN access required' });
+    return false;
+}
+
+async function requireTerminalAccessOrPin(req, res, userId, includeArchived = true) {
+    if (await hasTerminalAccess(req, userId)) return true;
+    try {
+        await terminalStore.verifyTerminalPin(db, userId, req.body?.pin, includeArchived);
+        return true;
+    } catch (error) {
+        res.status(401).json({ error: error.message || 'Terminal PIN access required' });
+        return false;
+    }
+}
+
 function saveBacktestResult({ userId = 'default', days, strategy, config, result }) {
     const summary = buildBacktestSummary(result);
     return new Promise((resolve, reject) => {
@@ -394,7 +419,7 @@ app.get('/api/terminals/:userId', async (req, res) => {
     try {
         const terminal = await terminalStore.getTerminal(db, req.params.userId, true);
         if (!terminal) return res.status(404).json({ error: 'Terminal not found' });
-        res.json(terminal);
+        res.json(terminalStore.publicTerminal(terminal));
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -402,6 +427,7 @@ app.get('/api/terminals/:userId', async (req, res) => {
 
 app.patch('/api/terminals/:userId', async (req, res) => {
     try {
+        if (!await requireTerminalAccess(req, res, req.params.userId)) return;
         const terminal = await terminalStore.updateTerminal(db, req.params.userId, req.body || {});
         res.json(terminal);
     } catch (error) {
@@ -411,15 +437,25 @@ app.patch('/api/terminals/:userId', async (req, res) => {
 
 app.post('/api/terminals/:userId/select', async (req, res) => {
     try {
-        const terminal = await terminalStore.selectTerminal(db, req.params.userId);
+        const session = await terminalStore.authenticateTerminal(db, req.params.userId, req.body?.pin);
+        res.json(session);
+    } catch (error) {
+        res.status(error.message === 'Incorrect PIN' ? 401 : 404).json({ error: error.message });
+    }
+});
+
+app.post('/api/terminals/:userId/pin', async (req, res) => {
+    try {
+        const terminal = await terminalStore.setTerminalPin(db, req.params.userId, req.body || {});
         res.json(terminal);
     } catch (error) {
-        res.status(404).json({ error: error.message });
+        res.status(400).json({ error: error.message });
     }
 });
 
 app.post('/api/terminals/:userId/archive', async (req, res) => {
     try {
+        if (!await requireTerminalAccessOrPin(req, res, req.params.userId, true)) return;
         const terminal = await terminalStore.archiveTerminal(db, req.params.userId);
         res.json(terminal);
     } catch (error) {
@@ -429,6 +465,7 @@ app.post('/api/terminals/:userId/archive', async (req, res) => {
 
 app.post('/api/terminals/:userId/restore', async (req, res) => {
     try {
+        if (!await requireTerminalAccessOrPin(req, res, req.params.userId, true)) return;
         const terminal = await terminalStore.restoreTerminal(db, req.params.userId);
         res.json(terminal);
     } catch (error) {
@@ -438,6 +475,7 @@ app.post('/api/terminals/:userId/restore', async (req, res) => {
 
 app.get('/api/terminals/:userId/settings', async (req, res) => {
     try {
+        if (!await requireTerminalAccess(req, res, req.params.userId)) return;
         const settings = await terminalStore.getSettings(db, req.params.userId);
         res.json(settings);
     } catch (error) {
@@ -447,6 +485,7 @@ app.get('/api/terminals/:userId/settings', async (req, res) => {
 
 app.patch('/api/terminals/:userId/settings', async (req, res) => {
     try {
+        if (!await requireTerminalAccess(req, res, req.params.userId)) return;
         const settings = await terminalStore.updateSettings(db, req.params.userId, req.body || {});
         res.json(settings);
     } catch (error) {
@@ -456,6 +495,7 @@ app.patch('/api/terminals/:userId/settings', async (req, res) => {
 
 app.get('/api/terminals/:userId/activity', async (req, res) => {
     try {
+        if (!await requireTerminalAccess(req, res, req.params.userId)) return;
         const activity = await terminalStore.getActivity(db, req.params.userId, req.query.limit || 50);
         res.json(activity.map(row => {
             try {
@@ -472,6 +512,7 @@ app.get('/api/terminals/:userId/activity', async (req, res) => {
 app.get('/api/balance', async (req, res) => {
     try {
         const userId = req.query.userId || 'default';
+        if (!await requireTerminalAccess(req, res, userId)) return;
         await terminalStore.ensureTerminalForUser(db, userId, 'Terminal');
         let row = await terminalStore.dbGet(db, `SELECT * FROM balance WHERE userId = ? ORDER BY timestamp DESC LIMIT 1`, [userId]);
         if (!row) {
@@ -484,10 +525,11 @@ app.get('/api/balance', async (req, res) => {
     }
 });
 
-app.get('/api/trades', (req, res) => {
+app.get('/api/trades', async (req, res) => {
     // Get trade history for selected terminal only
     const limit = req.query.limit || 50;
     const userId = req.query.userId || 'default';
+    if (!await requireTerminalAccess(req, res, userId)) return;
     db.all(`SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC LIMIT ?`, [userId, limit], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
@@ -497,9 +539,10 @@ app.get('/api/trades', (req, res) => {
     });
 });
 
-app.get('/api/trades/active', (req, res) => {
+app.get('/api/trades/active', async (req, res) => {
     // Get active trades for selected terminal only
     const userId = req.query.userId || 'default';
+    if (!await requireTerminalAccess(req, res, userId)) return;
     db.all(`SELECT * FROM trades WHERE userId = ? AND status = 'OPEN' ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
@@ -536,6 +579,7 @@ app.post('/api/trades', async (req, res) => {
     // Record a new trade for user
     const { action, entry_price, exit_price, quantity, pnl, score, notes, userId } = req.body;
     const user = userId || 'default';
+    if (!await requireTerminalAccess(req, res, user)) return;
 
     try {
         await terminalStore.ensureTerminalForUser(db, user, 'Terminal');
@@ -580,6 +624,7 @@ app.post('/api/bot/stop', (req, res) => {
 app.get('/api/bot/status', async (req, res) => {
     try {
         const userId = req.query.userId || 'default';
+        if (!await requireTerminalAccess(req, res, userId)) return;
         const status = tradingBot.getStatus();
         const recentTrades = await tradingBot.getRecentTrades(5);
         
@@ -604,6 +649,7 @@ app.post('/api/backtest', async (req, res) => {
         const runStrategy = strategy || 'confluence_scoring';
         const runConfig = config || {};
         const user = userId || 'default';
+        if (!await requireTerminalAccess(req, res, user)) return;
         await terminalStore.ensureTerminalForUser(db, user, 'Terminal');
         
         console.log(`Running backtest for ${runDays} days using ${runStrategy} strategy...`);
@@ -618,9 +664,10 @@ app.post('/api/backtest', async (req, res) => {
     }
 });
 
-app.get('/api/backtest/results', (req, res) => {
+app.get('/api/backtest/results', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit || '20', 10), 100);
     const userId = req.query.userId || 'default';
+    if (!await requireTerminalAccess(req, res, userId)) return;
     db.all(
         `SELECT id, userId, timestamp, days, strategy, data_source, candles_used, total_trades, win_rate, profit_factor, max_drawdown, total_return, final_equity, config_json, summary_json
          FROM backtest_results
@@ -635,8 +682,9 @@ app.get('/api/backtest/results', (req, res) => {
     );
 });
 
-app.get('/api/backtest/results/:id', (req, res) => {
+app.get('/api/backtest/results/:id', async (req, res) => {
     const userId = req.query.userId || 'default';
+    if (!await requireTerminalAccess(req, res, userId)) return;
     db.get(`SELECT * FROM backtest_results WHERE id = ? AND userId = ?`, [req.params.id, userId], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!row) return res.status(404).json({ error: 'Backtest result not found' });
@@ -644,8 +692,9 @@ app.get('/api/backtest/results/:id', (req, res) => {
     });
 });
 
-app.get('/api/backtest/results/:id/export', (req, res) => {
+app.get('/api/backtest/results/:id/export', async (req, res) => {
     const userId = req.query.userId || 'default';
+    if (!await requireTerminalAccess(req, res, userId)) return;
     db.get(`SELECT * FROM backtest_results WHERE id = ? AND userId = ?`, [req.params.id, userId], (err, row) => {
         if (err) return res.status(500).send('Error fetching backtest result');
         if (!row) return res.status(404).send('Backtest result not found');
@@ -686,6 +735,7 @@ app.post('/api/manual-trade', async (req, res) => {
     try {
         const { action, quantity, userId } = req.body;
         const user = userId || 'default';
+        if (!await requireTerminalAccess(req, res, user)) return;
         await terminalStore.ensureTerminalForUser(db, user, 'Terminal');
         
         // Get current price
@@ -714,6 +764,7 @@ app.post('/api/trades/:id/close', async (req, res) => {
     try {
         const tradeId = parseInt(req.params.id);
         const userId = req.body.userId || req.query.userId || 'default';
+        if (!await requireTerminalAccess(req, res, userId)) return;
         
         // Get current price
         db.get('SELECT price FROM prices ORDER BY timestamp DESC LIMIT 1', async (err, row) => {
@@ -736,8 +787,9 @@ app.post('/api/trades/:id/close', async (req, res) => {
 });
 
 // CSV Export endpoint
-app.get('/api/trades/export', (req, res) => {
+app.get('/api/trades/export', async (req, res) => {
     const userId = req.query.userId || 'default';
+    if (!await requireTerminalAccess(req, res, userId)) return;
     db.all(`SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             return res.status(500).send('Error fetching trades');
