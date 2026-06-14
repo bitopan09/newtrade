@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { archiveTerminal, createTerminal, fetchTerminals, restoreTerminal, selectTerminal, setTerminalPin } from '../services/api';
 
-const TerminalSelector = ({ onSelect }) => {
+const TerminalSelector = ({ onSelect, onCancel, currentTerminal = null, mode = 'entry' }) => {
     const [terminals, setTerminals] = useState([]);
     const [showArchived, setShowArchived] = useState(false);
     const [displayName, setDisplayName] = useState('');
@@ -96,17 +96,24 @@ const TerminalSelector = ({ onSelect }) => {
     const visibleTerminals = showArchived ? terminals : activeTerminals;
     const activeCount = activeTerminals.length;
     const archivedCount = archivedTerminals.length;
+    const isSwitchMode = mode === 'switch';
+    const isCurrentTerminal = (terminal) => currentTerminal?.userId === terminal.userId;
 
     return (
-        <div className="terminal-selector-screen">
+        <div className={`terminal-selector-screen ${isSwitchMode ? 'switch-mode' : ''}`}>
             <div className="terminal-selector-shell">
+                {isSwitchMode && (
+                    <button className="terminal-switcher-close" onClick={onCancel} aria-label="Close terminal switcher">
+                        Close
+                    </button>
+                )}
                 <div className="terminal-selector-hero">
                     <div className="terminal-selector-heading">
                         <div className="terminal-brand-mark">B</div>
                         <div>
-                            <div className="terminal-kicker">Paper Trading Workspace</div>
-                            <h1>Bullseye</h1>
-                            <p>Choose a terminal. Each profile keeps its own $50 balance, paper trades, backtests, and activity.</p>
+                            <div className="terminal-kicker">{isSwitchMode ? 'Switch Terminal' : 'Paper Trading Workspace'}</div>
+                            <h1>{isSwitchMode ? 'Choose Profile' : 'Bullseye'}</h1>
+                            <p>{isSwitchMode ? 'Your current dashboard stays open until another terminal is unlocked with its PIN.' : 'Choose a terminal. Each profile keeps its own $50 balance, paper trades, backtests, and activity.'}</p>
                         </div>
                     </div>
                     <div className="terminal-stats">
@@ -122,6 +129,12 @@ const TerminalSelector = ({ onSelect }) => {
                             <strong>$50</strong>
                             <span>Start</span>
                         </div>
+                        {isSwitchMode && currentTerminal && (
+                            <div className="terminal-current-stat">
+                                <strong>{currentTerminal.avatarInitial || currentTerminal.displayName?.charAt(0) || 'B'}</strong>
+                                <span>Current</span>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -129,8 +142,8 @@ const TerminalSelector = ({ onSelect }) => {
 
                 <div className="terminal-section-bar">
                     <div>
-                        <h2>{showArchived ? 'All Terminals' : 'Choose Your Terminal'}</h2>
-                        <p>{showArchived ? 'Archived terminals are muted and can be restored.' : 'Open a terminal to continue your paper trading session.'}</p>
+                        <h2>{showArchived ? 'All Terminals' : isSwitchMode ? 'Switch Without Losing Context' : 'Choose Your Terminal'}</h2>
+                        <p>{showArchived ? 'Archived terminals are muted and can be restored.' : isSwitchMode ? 'Enter the PIN for a different terminal, or close this panel to stay where you are.' : 'Open a terminal to continue your paper trading session.'}</p>
                     </div>
                     <button className="terminal-toggle-archived" onClick={() => setShowArchived(prev => !prev)}>
                         {showArchived ? 'Hide Archived' : `Show Archived (${archivedCount})`}
@@ -151,11 +164,11 @@ const TerminalSelector = ({ onSelect }) => {
                     ) : visibleTerminals.map(terminal => (
                         <form
                             key={terminal.userId}
-                            className={`terminal-card ${terminal.archived ? 'archived' : ''}`}
+                            className={`terminal-card ${terminal.archived ? 'archived' : ''} ${isCurrentTerminal(terminal) ? 'current' : ''}`}
                             onSubmit={(event) => terminal.hasPin ? handleSelect(event, terminal) : handleSetLegacyPin(event, terminal)}
                         >
                             <div className="terminal-card-topline">
-                                <span>{terminal.archived ? 'Archived' : terminal.hasPin ? 'PIN locked' : 'PIN setup'}</span>
+                                <span>{isCurrentTerminal(terminal) ? 'Current' : terminal.archived ? 'Archived' : terminal.hasPin ? 'PIN locked' : 'PIN setup'}</span>
                                 <span>{terminal.archived ? 'Restore to use' : terminal.hasPin ? 'Protected' : 'Required'}</span>
                             </div>
                             <div className="terminal-avatar" style={{ borderColor: terminal.avatarColor, color: terminal.avatarColor }}>
@@ -176,7 +189,7 @@ const TerminalSelector = ({ onSelect }) => {
                             {!terminal.hasPin && <div className="terminal-meta">Accept terms below, then set a PIN for this existing terminal.</div>}
                             {!terminal.archived && (
                                 <button className="terminal-open-button" type="submit" disabled={terminalPin(terminal).length < 4}>
-                                    {terminal.hasPin ? 'Open Terminal' : 'Set PIN'}
+                                    {isCurrentTerminal(terminal) ? 'Reopen Current' : terminal.hasPin ? 'Open Terminal' : 'Set PIN'}
                                 </button>
                             )}
                             {terminal.archived ? (
@@ -230,7 +243,7 @@ const TerminalSelector = ({ onSelect }) => {
                 </div>
 
                 <div className="terminal-selector-footer">
-                    <span>Archive never deletes data. PIN access is required before opening protected balances, trades, backtests, or settings.</span>
+                    <span>{isSwitchMode ? 'Closing this switcher keeps the current terminal active and unlocked.' : 'Archive never deletes data. PIN access is required before opening protected balances, trades, backtests, or settings.'}</span>
                 </div>
             </div>
         </div>

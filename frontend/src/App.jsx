@@ -15,6 +15,7 @@ function App() {
     const [botOnline, setBotOnline] = useState(false);
     const [apiConnected, setApiConnected] = useState(false);
     const [selectedTerminal, setSelectedTerminalState] = useState(getSelectedTerminal());
+    const [showTerminalSwitcher, setShowTerminalSwitcher] = useState(false);
     const activeUserId = selectedTerminal?.userId || getCurrentUserId();
 
     useEffect(() => {
@@ -64,13 +65,19 @@ function App() {
         };
     }, []);
 
-    const switchTerminal = () => {
+    const lockTerminal = () => {
         clearSelectedTerminal();
+        setShowTerminalSwitcher(false);
         setSelectedTerminalState(null);
     };
 
+    const handleTerminalSelect = (terminal) => {
+        setSelectedTerminalState(terminal);
+        setShowTerminalSwitcher(false);
+    };
+
     if (!selectedTerminal) {
-        return <TerminalSelector onSelect={setSelectedTerminalState} />;
+        return <TerminalSelector onSelect={handleTerminalSelect} />;
     }
 
     return (
@@ -98,11 +105,29 @@ function App() {
                         </span>
                     </div>
                     <div className="terminal-header-pill">
-                        <span>Terminal: {selectedTerminal.displayName}</span>
-                        <button onClick={switchTerminal}>Switch</button>
+                        <div className="terminal-header-avatar" style={{ borderColor: selectedTerminal.avatarColor, color: selectedTerminal.avatarColor }}>
+                            {selectedTerminal.avatarInitial || selectedTerminal.displayName?.charAt(0) || 'B'}
+                        </div>
+                        <div className="terminal-header-copy">
+                            <span>Active Terminal</span>
+                            <strong>{selectedTerminal.displayName}</strong>
+                        </div>
+                        <button onClick={() => setShowTerminalSwitcher(true)}>Switch</button>
+                        <button className="terminal-lock-button" onClick={lockTerminal}>Lock</button>
                     </div>
                 </div>
             </header>
+
+            {showTerminalSwitcher && (
+                <div className="terminal-switcher-overlay" role="dialog" aria-modal="true" aria-label="Switch terminal">
+                    <TerminalSelector
+                        mode="switch"
+                        currentTerminal={selectedTerminal}
+                        onSelect={handleTerminalSelect}
+                        onCancel={() => setShowTerminalSwitcher(false)}
+                    />
+                </div>
+            )}
 
             <main>
                 <div className="dashboard-grid">
