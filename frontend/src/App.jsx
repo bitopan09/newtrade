@@ -97,13 +97,13 @@ function App() {
                     <div className="header-clock">{clock}</div>
                     <div className="header-status">
                         <span className={`status-dot ${apiConnected ? 'online' : 'offline'}`}></span>
-                        <span style={{ color: apiConnected ? '#10b981' : '#ef4444', fontSize: '12px' }}>
+                        <span className={`header-status-label ${apiConnected ? 'online' : 'offline'}`}>
                             {apiConnected ? 'API ✓' : 'API ✗'}
                         </span>
                     </div>
                     <div className="header-status">
                         <span className={`status-dot ${botOnline ? 'online' : 'offline'}`}></span>
-                        <span style={{ color: botOnline ? '#10b981' : '#ef4444' }}>
+                        <span className={`header-status-label ${botOnline ? 'online' : 'offline'}`}>
                             {botOnline ? 'BOT LIVE' : 'BOT OFF'}
                         </span>
                     </div>

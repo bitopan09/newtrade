@@ -28,33 +28,41 @@ const ManualTrade = () => {
 
     return (
         <div className="manual-trade-container">
-            <h2>Paper Trade ({terminal?.displayName || 'Selected Terminal'})</h2>
-            <div className="trade-controls">
-                <div className="input-group">
-                    <label>Quantity (BTC)</label>
-                    <select value={quantity} onChange={(e) => setQuantity(Number(e.target.value))}>
-                        <option value={0.01}>0.01 BTC</option>
-                        <option value={0.02}>0.02 BTC</option>
-                        <option value={0.03}>0.03 BTC</option>
-                        <option value={0.04}>0.04 BTC</option>
-                    </select>
+            <div className="panel-heading">
+                <div>
+                    <h2>Paper Trade</h2>
+                    <p className="panel-kicker">Terminal: {terminal?.displayName || 'Selected Terminal'}</p>
                 </div>
-                <div className="action-buttons">
-                    <button 
-                        className="btn-buy" 
-                        onClick={() => handleTrade('BUY')}
-                        disabled={loading}
-                    >
-                        {loading ? 'Processing...' : 'BUY'}
-                    </button>
-                    <button 
-                        className="btn-sell" 
-                        onClick={() => handleTrade('SELL')}
-                        disabled={loading}
-                    >
-                        {loading ? 'Processing...' : 'SELL'}
-                    </button>
+            </div>
+            <div className="trade-ticket">
+                <div className="trade-controls">
+                    <div className="input-group">
+                        <label>Quantity (BTC)</label>
+                        <select value={quantity} onChange={(e) => setQuantity(Number(e.target.value))}>
+                            <option value={0.01}>0.01 BTC</option>
+                            <option value={0.02}>0.02 BTC</option>
+                            <option value={0.03}>0.03 BTC</option>
+                            <option value={0.04}>0.04 BTC</option>
+                        </select>
+                    </div>
+                    <div className="action-buttons">
+                        <button
+                            className="btn-buy"
+                            onClick={() => handleTrade('BUY')}
+                            disabled={loading}
+                        >
+                            {loading ? 'Processing...' : 'BUY'}
+                        </button>
+                        <button
+                            className="btn-sell"
+                            onClick={() => handleTrade('SELL')}
+                            disabled={loading}
+                        >
+                            {loading ? 'Processing...' : 'SELL'}
+                        </button>
+                    </div>
                 </div>
+                <p className="trade-ticket-note">Paper orders use the selected terminal balance and existing execution rules.</p>
             </div>
             {message && <div className={`trade-message ${messageType}`}>{message}</div>}
         </div>

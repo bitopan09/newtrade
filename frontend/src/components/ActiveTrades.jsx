@@ -56,11 +56,19 @@ const ActiveTrades = () => {
 
     return (
         <div className="active-trades-container">
-            <h2>Live Signals & Active Trades</h2>
+            <div className="panel-heading">
+                <div>
+                    <h2>Live Signals & Active Trades</h2>
+                    <p className="panel-kicker">Realtime P&L is based on the live BTC/USD price stream.</p>
+                </div>
+            </div>
             {loading ? (
-                <p>Loading active trades...</p>
+                <div className="state-panel loading-state">Loading active trades...</div>
             ) : trades.length === 0 ? (
-                <p>No active trades right now.</p>
+                <div className="state-panel empty-state">
+                    <strong>No active trades right now.</strong>
+                    <span>Waiting for the next valid paper trade or manual entry.</span>
+                </div>
             ) : (
                 <div className="active-trades-grid">
                     {trades.map(trade => {
@@ -73,11 +81,11 @@ const ActiveTrades = () => {
                                         {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
                                     </span>
                                 </div>
-                                <div className="trade-details">
-                                    <p><strong>Entry:</strong> ${trade.entry_price?.toFixed(2)}</p>
-                                    <p><strong>Live Price:</strong> ${currentPrice.toFixed(2)}</p>
-                                    <p><strong>SL:</strong> ${trade.sl?.toFixed(2) || 'N/A'}</p>
-                                    <p><strong>TP2:</strong> ${trade.tp2?.toFixed(2) || 'N/A'}</p>
+                                <div className="trade-details trade-detail-grid">
+                                    <p><strong>Entry</strong><span>${trade.entry_price?.toFixed(2)}</span></p>
+                                    <p><strong>Live Price</strong><span>${currentPrice.toFixed(2)}</span></p>
+                                    <p><strong>SL</strong><span>${trade.sl?.toFixed(2) || 'N/A'}</span></p>
+                                    <p><strong>TP2</strong><span>${trade.tp2?.toFixed(2) || 'N/A'}</span></p>
                                 </div>
                                 <button 
                                     className="btn-exit" 

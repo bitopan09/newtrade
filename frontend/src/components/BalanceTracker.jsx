@@ -32,8 +32,13 @@ const BalanceTracker = () => {
     if (loading && !balanceData) {
         return (
             <div className="balance-container">
-                <h2>Balance Tracker</h2>
-                <p>Loading balance data...</p>
+                <div className="panel-heading">
+                    <div>
+                        <h2>Balance Tracker</h2>
+                        <p className="panel-kicker">Terminal: {terminal?.displayName || 'Selected'}</p>
+                    </div>
+                </div>
+                <div className="state-panel loading-state">Loading balance data...</div>
             </div>
         );
     }
@@ -41,8 +46,13 @@ const BalanceTracker = () => {
     if (!balanceData) {
         return (
             <div className="balance-container">
-                <h2>Balance Tracker</h2>
-                <p>No balance data available</p>
+                <div className="panel-heading">
+                    <div>
+                        <h2>Balance Tracker</h2>
+                        <p className="panel-kicker">Terminal: {terminal?.displayName || 'Selected'}</p>
+                    </div>
+                </div>
+                <div className="state-panel empty-state">No balance data available</div>
             </div>
         );
     }
@@ -52,9 +62,11 @@ const BalanceTracker = () => {
 
     return (
         <div className="balance-container">
-            <h2>Balance Tracker</h2>
-            <div className="user-id-small" style={{ fontSize: '0.75em', color: '#64748b', marginBottom: '10px' }}>
-                Terminal: {terminal?.displayName || 'Selected'}
+            <div className="panel-heading">
+                <div>
+                    <h2>Balance Tracker</h2>
+                    <p className="panel-kicker">Terminal: {terminal?.displayName || 'Selected'}</p>
+                </div>
             </div>
             <div className="balance-details">
                 <div className="balance-item">
@@ -68,7 +80,7 @@ const BalanceTracker = () => {
                 <div className="balance-item">
                     <h3>Total Value (USD)</h3>
                     <p>${totalValue.toFixed(2)}</p>
-                    <span style={{ fontSize: '0.8em', color: '#718096' }}>Based on BTC @ ${currentPrice.toLocaleString()}</span>
+                    <span>Based on BTC @ ${currentPrice.toLocaleString()}</span>
                 </div>
             </div>
         </div>

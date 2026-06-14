@@ -174,8 +174,11 @@ const Backtester = () => {
 
     return (
         <div className="backtester-container">
-            <div className="backtester-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', marginBottom: '15px' }}>
-                <h2 style={{ borderBottom: 'none', marginBottom: 0 }}>Backtester</h2>
+            <div className="backtester-header">
+                <div>
+                    <h2 className="compact-heading">Backtester</h2>
+                    <p className="panel-kicker">Historical strategy readout using the current configured parameters.</p>
+                </div>
                 {results && (
                     <button onClick={() => downloadCsv()} className="btn-export-small">
                         Download CSV
@@ -183,11 +186,11 @@ const Backtester = () => {
                 )}
             </div>
 
-            <div style={{ marginBottom: '10px', padding: '6px 10px', background: 'rgba(99, 102, 241, 0.1)', borderRadius: '6px', border: '1px solid rgba(99, 102, 241, 0.2)', fontSize: '0.78rem', color: '#a5b4fc' }}>
-                <strong>⚡ Dynamic Lot:</strong> 0.01 – 0.04 BTC (risk-based, skipped if risk is too high)
+            <div className="backtester-note">
+                <strong>Dynamic Lot:</strong> 0.01 – 0.04 BTC (risk-based, skipped if risk is too high)
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', marginBottom: '12px', padding: '10px', border: '1px solid rgba(148, 163, 184, 0.18)', borderRadius: '8px', background: 'rgba(5, 5, 5, 0.86)' }}>
+            <div className="backtester-settings-grid">
                 {[
                     ['days', 'Days', 30, 365, 1],
                     ['riskPercentage', 'Risk %', 0.25, 5, 0.25],
@@ -202,7 +205,7 @@ const Backtester = () => {
                     ['slippageRate', 'Slippage %', 0, 0.5, 0.01],
                     ['spreadRate', 'Spread %', 0, 0.5, 0.01]
                 ].map(([name, label, min, max, step]) => (
-                    <label key={name} style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.72rem', color: '#cbd5e0' }}>
+                    <label key={name}>
                         {label}
                         <input
                             type="number"
@@ -211,7 +214,6 @@ const Backtester = () => {
                             step={step}
                             value={settings[name]}
                             onChange={(event) => updateSetting(name, event.target.value)}
-                            style={{ background: '#0f172a', border: '1px solid rgba(148, 163, 184, 0.25)', borderRadius: '6px', color: '#e2e8f0', padding: '6px' }}
                         />
                     </label>
                 ))}
@@ -228,12 +230,12 @@ const Backtester = () => {
             </div>
 
             {savedRuns.length > 0 && (
-                <div style={{ marginTop: '12px', padding: '10px', border: '1px solid rgba(148, 163, 184, 0.18)', borderRadius: '8px', background: 'rgba(5, 5, 5, 0.82)', color: '#cbd5e0' }}>
-                    <h4 style={{ margin: '0 0 8px 0', color: '#e2e8f0' }}>Saved Backtest Runs</h4>
+                <div className="saved-runs-panel">
+                    <h4>Saved Backtest Runs</h4>
                     {savedRuns.map(run => (
-                        <div key={run.id} style={{ display: 'flex', gap: '8px', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', borderTop: '1px solid rgba(148, 163, 184, 0.12)', fontSize: '0.75rem' }}>
+                        <div key={run.id} className="saved-run-row">
                             <span>#{run.id} | {new Date(run.timestamp).toLocaleString()} | {run.total_trades} trades | PF {(run.profit_factor || 0).toFixed(2)} | Return {((run.total_return || 0) * 100).toFixed(2)}%</span>
-                            <a href={`${API_BASE_URL}/backtest/results/${run.id}/export?userId=${encodeURIComponent(getCurrentUserId())}&accessToken=${encodeURIComponent(getTerminalAccessToken())}`} style={{ color: '#93c5fd' }}>CSV</a>
+                            <a href={`${API_BASE_URL}/backtest/results/${run.id}/export?userId=${encodeURIComponent(getCurrentUserId())}&accessToken=${encodeURIComponent(getTerminalAccessToken())}`}>CSV</a>
                         </div>
                     ))}
                 </div>
@@ -243,7 +245,7 @@ const Backtester = () => {
                 <div className="backtester-results">
                     <h3>Backtest Results ({settings.days} days)</h3>
                     {results.runId && (
-                        <p style={{ color: '#93c5fd', fontSize: '0.8rem' }}>Saved run #{results.runId}. CSV auto-download was triggered after completion.</p>
+                        <p className="saved-run-message">Saved run #{results.runId}. CSV auto-download was triggered after completion.</p>
                     )}
                     <div className="results-grid">
                         <div className="result-item">
@@ -305,18 +307,18 @@ const Backtester = () => {
                     </div>
 
                     {lotStats && (
-                        <div style={{ display: 'flex', gap: '12px', marginTop: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                            <div style={{ flex: 1, minWidth: '80px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', padding: '8px 10px', textAlign: 'center' }}>
-                                <div style={{ fontSize: '0.65rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Min Lot</div>
-                                <div style={{ fontSize: '1rem', fontWeight: 700, color: '#10b981' }}>{lotStats.minLot.toFixed(4)}</div>
+                        <div className="lot-stats-grid">
+                            <div className="lot-stat min">
+                                <div>Min Lot</div>
+                                <strong>{lotStats.minLot.toFixed(4)}</strong>
                             </div>
-                            <div style={{ flex: 1, minWidth: '80px', background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.2)', borderRadius: '8px', padding: '8px 10px', textAlign: 'center' }}>
-                                <div style={{ fontSize: '0.65rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Avg Lot</div>
-                                <div style={{ fontSize: '1rem', fontWeight: 700, color: '#818cf8' }}>{lotStats.avgLot.toFixed(4)}</div>
+                            <div className="lot-stat avg">
+                                <div>Avg Lot</div>
+                                <strong>{lotStats.avgLot.toFixed(4)}</strong>
                             </div>
-                            <div style={{ flex: 1, minWidth: '80px', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)', borderRadius: '8px', padding: '8px 10px', textAlign: 'center' }}>
-                                <div style={{ fontSize: '0.65rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Max Lot</div>
-                                <div style={{ fontSize: '1rem', fontWeight: 700, color: '#f59e0b' }}>{lotStats.maxLot.toFixed(4)}</div>
+                            <div className="lot-stat max">
+                                <div>Max Lot</div>
+                                <strong>{lotStats.maxLot.toFixed(4)}</strong>
                             </div>
                         </div>
                     )}
@@ -328,36 +330,38 @@ const Backtester = () => {
 
                     <div className="backtest-trades-list">
                         <h4>Individual Trades</h4>
-                        <table className="trade-table">
-                            <thead>
-                                <tr>
-                                    <th>Date</th>
-                                    <th>Action</th>
-                                    <th>Lot</th>
-                                    <th>Entry</th>
-                                    <th>Exit</th>
-                                    <th>PnL</th>
-                                    <th>Reason</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {results.trades.slice(0, 15).map(trade => (
-                                    <tr key={trade.id}>
-                                        <td>{new Date(trade.entryTimestamp || trade.timestamp).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}</td>
-                                        <td className={trade.action.toLowerCase()}>{trade.action}</td>
-                                        <td style={{ color: '#a5b4fc', fontFamily: 'monospace', fontSize: '0.8rem' }}>{(trade.quantity || 0.01).toFixed(4)}</td>
-                                        <td>${trade.entryPrice.toFixed(2)}</td>
-                                        <td>${trade.exitPrice.toFixed(2)}</td>
-                                        <td className={trade.pnl >= 0 ? 'profit' : 'loss'}>
-                                            ${trade.pnl.toFixed(2)}
-                                        </td>
-                                        <td style={{ fontSize: '0.72rem', color: '#94a3b8' }}>{trade.exitReason || '—'}</td>
+                        <div className="trade-table-wrap compact-table">
+                            <table className="trade-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Action</th>
+                                        <th>Lot</th>
+                                        <th>Entry</th>
+                                        <th>Exit</th>
+                                        <th>PnL</th>
+                                        <th>Reason</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    {results.trades.slice(0, 15).map(trade => (
+                                        <tr key={trade.id}>
+                                            <td>{new Date(trade.entryTimestamp || trade.timestamp).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}</td>
+                                            <td className={`action-text ${trade.action.toLowerCase()}`}>{trade.action}</td>
+                                            <td className="lot-cell">{(trade.quantity || 0.01).toFixed(4)}</td>
+                                            <td>${trade.entryPrice.toFixed(2)}</td>
+                                            <td>${trade.exitPrice.toFixed(2)}</td>
+                                            <td className={trade.pnl >= 0 ? 'profit' : 'loss'}>
+                                                ${trade.pnl.toFixed(2)}
+                                            </td>
+                                            <td className="reason-cell">{trade.exitReason || '—'}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                         {results.trades.length > 15 && (
-                            <p style={{ fontSize: '0.8rem', color: '#718096', textAlign: 'center' }}>
+                            <p className="table-footnote">
                                 Showing first 15 of {results.trades.length} real trades. Download CSV for full historical data.
                             </p>
                         )}
@@ -366,7 +370,7 @@ const Backtester = () => {
             )}
 
             {!results && !isRunning && (
-                <p>Click "Run 90-Day Backtest" to see historical performance</p>
+                <div className="state-panel empty-state">Click "Run 90-Day Backtest" to see historical performance</div>
             )}
         </div>
     );

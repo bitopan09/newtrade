@@ -347,9 +347,9 @@ const LiveChart = () => {
         <div className="chart-container">
             <div className="live-chart-header">
                 <div>
-                    <h2 style={{ marginBottom: 0 }}>BTC/USD {timeframe}</h2>
+                    <h2 className="section-heading compact-heading">BTC/USD {timeframe}</h2>
                     <div className="live-chart-source">
-                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 10px #22c55e' }} />
+                        <span className="live-source-dot" />
                         <span>{chartProfile.compact ? 'Coinbase live' : 'Coinbase Live OHLC'}</span>
                     </div>
                 </div>
@@ -388,7 +388,7 @@ const LiveChart = () => {
                 <p>Current Price: {formatPrice(latestCandleRef.current?.close)}</p>
                 <p>Timeframe: {timeframe} candles</p>
                 <p>Interactive: pan, zoom, pinch, crosshair</p>
-                {error && <p style={{ color: '#f87171' }}>{error}</p>}
+                {error && <p className="chart-error-text">{error}</p>}
             </div>
         </div>
     );

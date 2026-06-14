@@ -46,25 +46,42 @@ const BotStatus = () => {
 
     return (
         <div className="bot-status-container">
-            <h2>Today's Activity</h2>
+            <div className="panel-heading">
+                <div>
+                    <h2>Today's Activity</h2>
+                    <p className="panel-kicker">Live strategy state for the selected terminal.</p>
+                </div>
+            </div>
+            <div className="bot-metrics-row">
+                <div className="bot-metric-card">
+                    <span>Bot Status</span>
+                    <strong className={bot.isRunning ? 'status-online' : 'status-offline'}>{bot.isRunning ? 'ONLINE' : 'OFFLINE'}</strong>
+                </div>
+                <div className="bot-metric-card">
+                    <span>Daily Trades</span>
+                    <strong>{bot.dailyTradeCount || 0}/{bot.config?.maxDailyTrades || 1}</strong>
+                </div>
+                <div className="bot-metric-card">
+                    <span>Confluence</span>
+                    <strong>{bot.currentScore}/10</strong>
+                </div>
+                <div className="bot-metric-card">
+                    <span>Signal</span>
+                    <strong className={`signal-text signal-${String(bot.currentSignal || 'neutral').toLowerCase()}`}>{bot.currentSignal}</strong>
+                </div>
+            </div>
             <div className="status-grid">
                 <div className="status-card">
-                    <p><strong>Bot Status:</strong> <span className={bot.isRunning ? 'status-online' : 'status-offline'}>{bot.isRunning ? '🟢 ONLINE' : '🔴 OFFLINE'}</span></p>
-                            <p><strong>Daily Trades:</strong> {bot.dailyTradeCount || 0}/{bot.config?.maxDailyTrades || 1}</p>
-                    <p><strong>Live Confluence:</strong> {bot.currentScore}/10 
-                        <span style={{ fontSize: '0.8rem', marginLeft: '8px', color: bot.currentSignal === 'NEUTRAL' ? '#94a3b8' : (bot.currentSignal === 'BUY' ? '#4ade80' : '#f87171') }}>
-                            ({bot.currentSignal})
-                        </span>
-                    </p>
-                    
+                    <h4>Strategy Guardrails</h4>
+
                     {bot.lastAnalysisTime && (
-                        <p style={{ fontSize: '0.8rem', marginTop: '8px', color: '#cbd5e0' }}>
+                        <p className="analysis-time">
                             Last Analysis: {formatTimeIST(bot.lastAnalysisTime, 'date-time')} IST
                         </p>
                     )}
 
                     {bot.config && (
-                        <div style={{ marginTop: '10px', padding: '8px', border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '6px', fontSize: '0.76rem', color: '#cbd5e0' }}>
+                        <div className="bot-config-grid">
                             <p><strong>Risk:</strong> {bot.config.riskPercentage}% | <strong>Score:</strong> {bot.config.minConfluenceScore}/10 | <strong>ADX:</strong> {bot.config.adxThreshold}</p>
                             <p><strong>SL:</strong> {bot.config.atrStopMultiplier}x ATR | <strong>TP:</strong> {bot.config.partialTpRr}R/{bot.config.finalTpRr}R | <strong>Trail:</strong> {bot.config.trailingStartRr}R</p>
                             <p><strong>Max ATR:</strong> {(bot.config.maxAtrPercentOfPrice * 100).toFixed(2)}% | <strong>Min RR:</strong> {bot.config.minRewardToRisk}R</p>
@@ -76,25 +93,25 @@ const BotStatus = () => {
                     <button 
                         onClick={testTelegram} 
                         disabled={telegramTesting}
-                        style={{ marginTop: '12px', padding: '6px 12px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}
+                        className="btn-secondary"
                     >
                         {telegramTesting ? 'Sending...' : 'Test Telegram Alert'}
                     </button>
                     {telegramMessage && (
-                        <p style={{ fontSize: '0.8rem', marginTop: '6px', color: telegramMessage.type === 'success' ? '#4ade80' : '#f87171' }}>
+                        <p className={`inline-message ${telegramMessage.type}`}>
                             {telegramMessage.text}
                         </p>
                     )}
                 </div>
                 
                 <div className="today-trade-card">
-                    <h4 style={{ margin: '0 0 8px 0', color: '#e2e8f0' }}>Today's Single Trade</h4>
+                    <h4>Today's Single Trade</h4>
                     {todayTrade ? (
                         <div className={`mini-trade-details ${todayTrade.action.toLowerCase()}`}>
                             <p><strong>{todayTrade.action}</strong> at ${todayTrade.entry_price.toFixed(2)}</p>
                             <p>Status: <span className={`status-${todayTrade.status.toLowerCase()}`}>{todayTrade.status}</span></p>
                             {todayTrade.pnl !== null && <p>Result: <span className={todayTrade.pnl >= 0 ? 'profit' : 'loss'}>${todayTrade.pnl.toFixed(2)}</span></p>}
-                            <p style={{ fontSize: '0.8rem', marginTop: '6px' }}>{formatTimeIST(todayTrade.timestamp, 'date-time')}</p>
+                            <p className="mini-trade-time">{formatTimeIST(todayTrade.timestamp, 'date-time')}</p>
                         </div>
                     ) : (
                         <p className="no-trade">No trade taken yet today.</p>
