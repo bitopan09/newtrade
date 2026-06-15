@@ -43,6 +43,10 @@ const ManualTrade = () => {
                             <option value={0.02}>0.02 BTC</option>
                             <option value={0.03}>0.03 BTC</option>
                             <option value={0.04}>0.04 BTC</option>
+                            <option value={0.05}>0.05 BTC</option>
+                            <option value={0.06}>0.06 BTC</option>
+                            <option value={0.07}>0.07 BTC</option>
+                            <option value={0.08}>0.08 BTC</option>
                         </select>
                     </div>
                     <div className="action-buttons">

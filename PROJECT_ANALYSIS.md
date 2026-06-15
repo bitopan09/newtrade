@@ -5,7 +5,7 @@
 - Is every market price real exchange data? Yes after the latest update. Live price streaming uses real Coinbase WebSocket data, live analysis fetches real Coinbase BTC-USD candles, the chart uses real Coinbase OHLC candles, and backtests now refuse to run if real exchange candle APIs fail.
 - Can this be applied directly to a real account? No, not directly. The current project is paper trading only. It logs trades in SQLite and does not place real exchange orders.
 - Will it give signals tomorrow? It can, if the backend is running, Coinbase data is reachable, and the strategy conditions pass. It is not guaranteed to produce a BUY or SELL signal every day.
-- How much risk is it taking per trade? Maximum risk is capped at 5% of the current doubled base-balance tier. For a $50 base, the cap is $2.50 per trade. After equity reaches $100, the cap becomes $5.00, then $10.00 at $200, etc.
+- How much risk is it taking per trade? Maximum risk is capped at 5% of the current doubled base-balance tier. For a $100 base, the cap is $5.00 per trade. After equity reaches $200, the cap becomes $10.00, then $20.00 at $400, etc.
 - Can it be used to take real-time trades? It can be used as a real-time paper-trading and signal-monitoring tool. It should not be trusted for real-money auto-trading until real exchange execution, sandbox testing, security, and risk controls are added and tested.
 
 ## What The Project Does
@@ -82,7 +82,7 @@ Reasons:
 - It has no live account balance synchronization.
 - Auth was removed from the dashboard, so the UI should not be publicly exposed.
 - The latest backtest still has high drawdown.
-- A `0.01 BTC` minimum lot is large for a `$50` account and may require leverage or more capital on a real exchange.
+- A `0.01 BTC` minimum lot is large for a `$100` account and may require leverage or more capital on a real exchange.
 
 Safe current use:
 
@@ -144,10 +144,10 @@ Examples:
 
 | Equity Range | Base Balance | Max Risk Per Trade |
 | --- | ---: | ---: |
-| $50 to $99.99 | $50 | $2.50 |
 | $100 to $199.99 | $100 | $5.00 |
 | $200 to $399.99 | $200 | $10.00 |
 | $400 to $799.99 | $400 | $20.00 |
+| $800 to $1599.99 | $800 | $40.00 |
 
 The actual risk is calculated as:
 
@@ -161,8 +161,8 @@ Example:
 Entry: $50,000
 Stop: $49,750
 Stop distance: $250
-Quantity: 0.01 BTC
-Actual risk: 0.01 x 250 = $2.50
+Quantity: 0.02 BTC
+Actual risk: 0.02 x 250 = $5.00
 ```
 
 If the minimum allowed lot of `0.01 BTC` would risk more than the current cap, the bot skips the trade.
@@ -175,7 +175,7 @@ The bot now only allows these BTC quantities:
 0.01 BTC
 0.02 BTC
 0.03 BTC
-0.04 BTC
+0.08 BTC
 ```
 
 It does not allow fractional values like:
@@ -236,8 +236,8 @@ Profit factor: 2.06
 Max drawdown: 87.62%
 Total return: +469.65%
 Final equity: $284.82
-Allowed lots: 0.01, 0.02, 0.03, 0.04 BTC
-Lots selected by this run: 0.01, 0.02, 0.04 BTC
+Allowed lots: 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08 BTC
+Lots selected by this run: depends on current risk and stop distance, capped at 0.08 BTC
 ```
 
 Interpretation:

@@ -7,12 +7,13 @@ const UnifiedStrategy = require('./unifiedStrategy');
 class AnalysisEngine {
     constructor() {
         this.strategy = new UnifiedStrategy();
+        const unifiedPreset = String(process.env.STRATEGY_PRESET || 'unified').toLowerCase() === 'unified';
         this.indicators = {
             trendFilter: { enabled: true, timeframe: '4H', emaPeriod: 50 },
             srDetector: { enabled: true, lookbackPeriods: 100 },
             obFvGScanner: { enabled: true, minObSize: 0.01 },
             chochBosDetector: { enabled: true, timeframe: '5M' },
-            confluenceScorer: { enabled: true, threshold: Number(process.env.MIN_CONFLUENCE_SCORE) || 6 },
+            confluenceScorer: { enabled: true, threshold: unifiedPreset ? 6 : Number(process.env.MIN_CONFLUENCE_SCORE) || 6 },
             riskCalculator: { enabled: true, riskPerTrade: (Number(process.env.RISK_PERCENTAGE) || 1) / 100 }
         };
     }

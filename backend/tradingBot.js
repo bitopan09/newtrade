@@ -3,9 +3,10 @@ const DecisionEngine = require('./decisionEngine');
 const ExecutionEngine = require('./executionEngine');
 const notificationService = require('./emailService');
 const fetch = require('node-fetch');
+const { getUnifiedPresetConfig } = require('./strategyConfig');
 
 const LOT_MIN_BTC = 0.01;
-const LOT_MAX_BTC = 0.04;
+const LOT_MAX_BTC = 0.06;
 const LOT_STEP_BTC = 0.01;
 
 class TradingBot {
@@ -27,6 +28,8 @@ class TradingBot {
         this.analysisInterval = null;
         this.priceData = []; // Store recent price data for analysis
         this.maxDataPoints = 100; // Keep last 100 data points
+        this.analysisInProgress = false;
+        this.lastExecutedSignalCandle = null;
 
         this._initializePriceData();
     }
@@ -85,6 +88,12 @@ class TradingBot {
      * Main analysis and trading loop
      */
     async _analyzeAndTrade() {
+        if (this.analysisInProgress) {
+            console.log('Trade analysis skipped: previous analysis still running');
+            return;
+        }
+
+        this.analysisInProgress = true;
         try {
             // Fetch live 6H candles from Coinbase for proper institutional analysis
             const productId = 'BTC-USD';
@@ -116,6 +125,12 @@ class TradingBot {
                 price: candle[4]
             })).reverse();
 
+            this.priceData = this._filterClosedCandles(this.priceData, granularity);
+            if (this.priceData.length < 50) {
+                console.log('Trade analysis skipped: insufficient closed candle history');
+                return;
+            }
+
             // Perform analysis and make decision
             const decision = await this.decisionEngine.makeDecision(this.priceData);
             this.lastAnalysisTime = new Date().toISOString();
@@ -138,11 +153,32 @@ class TradingBot {
 
             // If decision is to trade, execute it
             if (decision.action === 'BUY' || decision.action === 'SELL') {
-                const currentPrice = this.priceData[this.priceData.length - 1].price;
+                const signalCandle = this.priceData[this.priceData.length - 1];
+                const signalCandleKey = `${decision.action}:${new Date(signalCandle.timestamp).toISOString()}`;
+
+                if (this.lastExecutedSignalCandle === signalCandleKey) {
+                    const reason = 'Duplicate signal candle blocked';
+                    console.log(`Trade skipped: ${reason}`);
+                    this._logSignal({
+                        source: 'duplicate_guard',
+                        action: 'SKIP',
+                        score: decision.details.score,
+                        price: signalCandle.price,
+                        reason,
+                        details: { signalCandle: signalCandleKey, decision: decision.details }
+                    });
+                    return;
+                }
+
+                const latestMarketPrice = await this._getLatestMarketPrice();
+                const currentPrice = Number.isFinite(latestMarketPrice) ? latestMarketPrice : signalCandle.price;
                 const riskParams = decision.details.analysis.riskCalculator;
-                const sl = decision.action === 'BUY' ? riskParams.stopLoss.long : riskParams.stopLoss.short;
-                const partialTp = decision.action === 'BUY' ? riskParams.takeProfit.partialLong : riskParams.takeProfit.partialShort;
-                const finalTp = decision.action === 'BUY' ? riskParams.takeProfit.finalLong : riskParams.takeProfit.finalShort;
+                const slDistance = riskParams.slDistance;
+                const partialTpDistance = slDistance * riskParams.riskReward.partial;
+                const finalTpDistance = slDistance * riskParams.riskReward.final;
+                const sl = decision.action === 'BUY' ? currentPrice - slDistance : currentPrice + slDistance;
+                const partialTp = decision.action === 'BUY' ? currentPrice + partialTpDistance : currentPrice - partialTpDistance;
+                const finalTp = decision.action === 'BUY' ? currentPrice + finalTpDistance : currentPrice - finalTpDistance;
                 // Get current balance and calculate dynamic quantity based on tiered risk
                 const balanceRow = await new Promise((resolve) => {
                     this.db.get(`SELECT * FROM balance WHERE userId = 'default' ORDER BY timestamp DESC LIMIT 1`, [], (err, row) => {
@@ -151,7 +187,13 @@ class TradingBot {
                 });
                 
                 const currentBalance = balanceRow ? balanceRow.usd_balance : 50;
-                const size = this._calculatePositionSize({ equity: currentBalance, entryPrice: currentPrice, stopLoss: sl });
+                const size = this._calculatePositionSize({
+                    equity: currentBalance,
+                    entryPrice: currentPrice,
+                    stopLoss: sl,
+                    config: getUnifiedPresetConfig(),
+                    score: decision.details.score
+                });
 
                 if (!size.allowed) {
                     console.log(`Trade skipped by sizing guard: ${size.reason}`);
@@ -184,6 +226,7 @@ class TradingBot {
 
                 if (result.success) {
                     console.log(`Trade executed: ${result.message}`);
+                    this.lastExecutedSignalCandle = signalCandleKey;
                     if (typeof this.decisionEngine.recordTradeEntry === 'function') {
                         this.decisionEngine.recordTradeEntry();
                     }
@@ -208,7 +251,19 @@ class TradingBot {
             
         } catch (error) {
             console.error('Error in trading loop:', error);
+        } finally {
+            this.analysisInProgress = false;
         }
+    }
+
+    _getLatestMarketPrice() {
+        return new Promise((resolve) => {
+            if (!this.db) return resolve(null);
+            this.db.get('SELECT price FROM prices ORDER BY timestamp DESC LIMIT 1', (err, row) => {
+                const price = Number(row?.price);
+                resolve(!err && Number.isFinite(price) ? price : null);
+            });
+        });
     }
 
     /**
@@ -229,6 +284,8 @@ class TradingBot {
      * @returns {Object} Bot status information
      */
     getStatus() {
+        const effectiveConfig = this._getEffectiveBacktestConfig({ STRATEGY_PRESET: this._getStrategyPreset() });
+
         return {
             isRunning: this.isRunning,
             priceDataPoints: this.priceData.length,
@@ -241,20 +298,23 @@ class TradingBot {
             dailyLossCount: this.decisionEngine.dailyLossCount,
             circuitBreakerActive: this.decisionEngine.circuitBreakerActive,
             config: {
-                riskPercentage: this._getRiskFraction() * 100,
-                maxDailyTrades: this._getNumberEnv('DAILY_TRADE_LIMIT', 1),
-                maxDailyLosses: this._getNumberEnv('MAX_DAILY_LOSSES', 1),
-                minConfluenceScore: this._getNumberEnv('MIN_CONFLUENCE_SCORE', 4),
-                adxThreshold: this._getNumberEnv('ADX_THRESHOLD', 18),
-                atrStopMultiplier: this._getNumberEnv('ATR_STOP_MULTIPLIER', 0.05),
-                maxAtrPercentOfPrice: this._getNumberEnv('MAX_ATR_PERCENT_OF_PRICE', 0.08),
-                partialTpRr: this._getNumberEnv('PARTIAL_TP_RR', 100),
-                finalTpRr: this._getNumberEnv('FINAL_TP_RR', 100),
-                minRewardToRisk: this._getNumberEnv('MIN_REWARD_TO_RISK', 1.5),
-                trailingStartRr: this._getNumberEnv('TRAILING_START_RR', 1),
-                minQuantity: LOT_MIN_BTC,
-                maxQuantity: LOT_MAX_BTC,
-                sessionUtc: `${this._getNumberEnv('BOT_START_HOUR', 0)}:00-${this._getNumberEnv('BOT_END_HOUR', 23)}:00`
+                strategyPreset: effectiveConfig.STRATEGY_PRESET,
+                useClosedCandleSignals: effectiveConfig.USE_CLOSED_CANDLE_SIGNALS,
+                riskPercentage: this._getRiskFraction(effectiveConfig) * 100,
+                maxDailyTrades: effectiveConfig.DAILY_TRADE_LIMIT,
+                maxDailyLosses: effectiveConfig.MAX_DAILY_LOSSES,
+                minConfluenceScore: effectiveConfig.MIN_CONFLUENCE_SCORE,
+                adxThreshold: effectiveConfig.ADX_THRESHOLD,
+                atrStopMultiplier: effectiveConfig.ATR_STOP_MULTIPLIER,
+                maxAtrPercentOfPrice: effectiveConfig.MAX_ATR_PERCENT_OF_PRICE,
+                partialTpRr: effectiveConfig.PARTIAL_TP_RR,
+                finalTpRr: effectiveConfig.FINAL_TP_RR,
+                minRewardToRisk: effectiveConfig.MIN_REWARD_TO_RISK,
+                trailingStartRr: effectiveConfig.TRAILING_START_RR,
+                minQuantity: effectiveConfig.TRADING_MIN_BTC_QTY,
+                maxQuantity: effectiveConfig.TRADING_MAX_BTC_QTY,
+                lotStep: effectiveConfig.TRADING_LOT_STEP_BTC,
+                sessionUtc: `${effectiveConfig.BOT_START_HOUR}:00-${effectiveConfig.BOT_END_HOUR}:00`
             }
         };
     }
@@ -292,47 +352,234 @@ class TradingBot {
         return Object.fromEntries(Object.entries(config).filter(([key]) => !key.startsWith('__')));
     }
 
+    _getConfigBoolean(name, fallback, config = {}) {
+        if (config[name] !== undefined) {
+            if (typeof config[name] === 'boolean') return config[name];
+            return String(config[name]).toLowerCase() === 'true';
+        }
+
+        if (process.env[name] === undefined) return fallback;
+        return String(process.env[name]).toLowerCase() === 'true';
+    }
+
+    _getStrategyPreset(config = {}) {
+        return String(config.STRATEGY_PRESET || process.env.STRATEGY_PRESET || 'unified').toLowerCase();
+    }
+
+    _unifiedPresetConfig() {
+        return getUnifiedPresetConfig();
+    }
+
+    _applyStrategyPreset(config = {}) {
+        const internalKeys = Object.fromEntries(Object.entries(config).filter(([key]) => key.startsWith('__')));
+        return { ...this._unifiedPresetConfig(), ...config, ...internalKeys };
+    }
+
+    _shouldUseClosedCandleSignals(config = {}) {
+        if (config.USE_CLOSED_CANDLE_SIGNALS !== undefined) {
+            return this._getConfigBoolean('USE_CLOSED_CANDLE_SIGNALS', false, config);
+        }
+
+        if (this._getStrategyPreset(config) === 'unified') return true;
+
+        return this._getConfigBoolean('USE_CLOSED_CANDLE_SIGNALS', false, config);
+    }
+
+    _filterClosedCandles(candles, granularitySeconds = 21600, config = {}) {
+        if (!this._shouldUseClosedCandleSignals(config) || !Array.isArray(candles) || candles.length === 0) {
+            return candles;
+        }
+
+        const now = Date.now();
+        return candles.filter(candle => {
+            const timestamp = candle.timestamp instanceof Date ? candle.timestamp.getTime() : new Date(candle.timestamp).getTime();
+            return Number.isFinite(timestamp) && timestamp + granularitySeconds * 1000 <= now;
+        });
+    }
+
+    _getBacktestSimulationMode(config = {}) {
+        return 'unified-live';
+    }
+
+    _getEffectiveBacktestConfig(config = {}) {
+        config = this._applyStrategyPreset(config);
+        const simulationMode = this._getBacktestSimulationMode(config);
+
+        return {
+            simulationMode,
+            SIMULATION_MODE: simulationMode,
+            BACKTEST_INITIAL_EQUITY: this._clampConfigNumber('BACKTEST_INITIAL_EQUITY', 50, 1, 1000000, config),
+            STRATEGY_PRESET: this._getStrategyPreset(config),
+            USE_CLOSED_CANDLE_SIGNALS: this._shouldUseClosedCandleSignals(config),
+            UNIFIED_MODE: this._getConfigBoolean('UNIFIED_MODE', this._getStrategyPreset(config) === 'unified', config),
+            RISK_PERCENTAGE: this._getConfigNumber('RISK_PERCENTAGE', 5, config),
+            DAILY_TRADE_LIMIT: this._clampConfigNumber('DAILY_TRADE_LIMIT', 1, 1, 10, config),
+            MAX_DAILY_LOSSES: this._clampConfigNumber('MAX_DAILY_LOSSES', 1, 1, 10, config),
+            MIN_CONFLUENCE_SCORE: this._getConfigNumber('MIN_CONFLUENCE_SCORE', 6, config),
+            ADX_THRESHOLD: this._getConfigNumber('ADX_THRESHOLD', 33, config),
+            ATR_STOP_MULTIPLIER: this._getConfigNumber('ATR_STOP_MULTIPLIER', 0.2, config),
+            MAX_ATR_PERCENT_OF_PRICE: this._getConfigNumber('MAX_ATR_PERCENT_OF_PRICE', 0.04, config),
+            PARTIAL_TP_RR: this._getConfigNumber('PARTIAL_TP_RR', 100, config),
+            FINAL_TP_RR: this._getConfigNumber('FINAL_TP_RR', 2, config),
+            MIN_REWARD_TO_RISK: this._getConfigNumber('MIN_REWARD_TO_RISK', 1.2, config),
+            MAX_DOLLAR_RISK: this._getConfigNumber('MAX_DOLLAR_RISK', 0, config),
+            BREAKEVEN_TRIGGER_RR: this._getConfigNumber('BREAKEVEN_TRIGGER_RR', 1.5, config),
+            TRAILING_START_RR: this._getConfigNumber('TRAILING_START_RR', 0.6, config),
+            TRAILING_STOP_ATR_MULTIPLIER: this._getConfigNumber('TRAILING_STOP_ATR_MULTIPLIER', 1, config),
+            MAX_SL_PERCENT_OF_PRICE: this._getConfigNumber('MAX_SL_PERCENT_OF_PRICE', 0.04, config),
+            CONFLUENCE_LOT_SCALING: this._getConfigBoolean('CONFLUENCE_LOT_SCALING', true, config),
+            CONFLUENCE_LOT_START_SCORE: this._getConfigNumber('CONFLUENCE_LOT_START_SCORE', 7, config),
+            CONFLUENCE_MAX_RISK_PERCENTAGE: this._getConfigNumber('CONFLUENCE_MAX_RISK_PERCENTAGE', 7.5, config),
+            TRADING_MIN_BTC_QTY: this._getConfigNumber('TRADING_MIN_BTC_QTY', LOT_MIN_BTC, config),
+            TRADING_MAX_BTC_QTY: this._getConfigNumber('TRADING_MAX_BTC_QTY', LOT_MAX_BTC, config),
+            TRADING_LOT_STEP_BTC: this._getConfigNumber('TRADING_LOT_STEP_BTC', LOT_STEP_BTC, config),
+            BOT_START_HOUR: this._clampConfigNumber('BOT_START_HOUR', 0, 0, 23, config),
+            BOT_END_HOUR: this._clampConfigNumber('BOT_END_HOUR', 23, 0, 23, config),
+            BACKTEST_FEE_RATE: this._clampConfigNumber('BACKTEST_FEE_RATE', 0.001, 0, 0.01, config),
+            BACKTEST_SLIPPAGE_RATE: this._clampConfigNumber('BACKTEST_SLIPPAGE_RATE', 0.0005, 0, 0.01, config),
+            BACKTEST_SPREAD_RATE: this._clampConfigNumber('BACKTEST_SPREAD_RATE', 0.0002, 0, 0.01, config),
+            MIN_SCORE_EDGE: this._getConfigNumber('MIN_SCORE_EDGE', 3, config),
+            REJECT_TIE_SCORE: this._getConfigBoolean('REJECT_TIE_SCORE', false, config),
+            REQUIRE_DIRECTIONAL_TRIGGER: this._getConfigBoolean('REQUIRE_DIRECTIONAL_TRIGGER', false, config),
+            MIN_EMA_SEPARATION: this._getConfigNumber('MIN_EMA_SEPARATION', 0, config),
+            MAX_SIGNAL_RANGE_ATR: this._getConfigNumber('MAX_SIGNAL_RANGE_ATR', 3.5, config),
+            ALLOW_LONG_TRADES: this._getConfigBoolean('ALLOW_LONG_TRADES', true, config),
+            ALLOW_SHORT_TRADES: this._getConfigBoolean('ALLOW_SHORT_TRADES', true, config)
+        };
+    }
+
     _getRiskFraction(config = {}) {
         const configured = this._getConfigNumber('RISK_PERCENTAGE', 5, config);
         const riskFraction = configured >= 1 ? configured / 100 : configured;
         return Math.min(0.05, Math.max(0, riskFraction));
     }
 
-    _getTieredBaseBalance(equity) {
-        let baseBalance = 50;
+    _getTieredBaseBalance(equity, config = {}) {
+        const initialEquity = this._clampConfigNumber('BACKTEST_INITIAL_EQUITY', 50, 1, 1000000, config);
+        let baseBalance = this._clampConfigNumber('RISK_BASE_BALANCE', initialEquity, 1, 1000000, config);
         while (baseBalance * 2 <= equity) {
             baseBalance *= 2;
         }
         return baseBalance;
     }
 
-    _calculatePositionSize({ equity, entryPrice, stopLoss, config = {} }) {
-        const riskFraction = this._getRiskFraction(config);
-        const baseBalance = this._getTieredBaseBalance(equity);
-        const riskAmount = baseBalance * riskFraction;
+    _floorLotStep(quantity, lotStep = LOT_STEP_BTC) {
+        return parseFloat((Math.floor((Number(quantity) + 1e-9) / lotStep) * lotStep).toFixed(2));
+    }
+
+    _getFractionConfig(name, fallbackPercent, config = {}) {
+        const configured = this._getConfigNumber(name, fallbackPercent, config);
+        const fraction = configured >= 1 ? configured / 100 : configured;
+        return Math.max(0, fraction);
+    }
+
+    _getConfluenceSizing({ score, minQty, maxQty, lotStep, baseRiskFraction, config = {} }) {
+        const scalingEnabled = this._getConfigBoolean('CONFLUENCE_LOT_SCALING', true, config);
+        const hasScore = score !== null && score !== undefined && score !== '';
+        const numericScore = Number(score);
+
+        if (!scalingEnabled || !hasScore || !Number.isFinite(numericScore)) {
+            return {
+                enabled: false,
+                score: Number.isFinite(numericScore) ? numericScore : null,
+                normalized: 0,
+                targetQuantity: maxQty,
+                riskFraction: baseRiskFraction
+            };
+        }
+
+        const minScore = this._getConfigNumber('MIN_CONFLUENCE_SCORE', 5, config);
+        const configuredStartScore = this._getConfigNumber('CONFLUENCE_LOT_START_SCORE', 7, config);
+        const startScore = Math.min(10, Math.max(minScore, configuredStartScore));
+
+        if (numericScore < startScore) {
+            return {
+                enabled: true,
+                score: numericScore,
+                normalized: 0,
+                startScore,
+                targetQuantity: minQty,
+                riskFraction: baseRiskFraction
+            };
+        }
+
+        const scoreSpan = Math.max(1, 10 - startScore + 1);
+        const normalized = Math.min(1, Math.max(0, (numericScore - startScore + 1) / scoreSpan));
+        const maxRiskFraction = Math.max(
+            baseRiskFraction,
+            this._getFractionConfig('CONFLUENCE_MAX_RISK_PERCENTAGE', 7.5, config)
+        );
+        const targetQuantity = this._floorLotStep(minQty + ((maxQty - minQty) * normalized), lotStep);
+
+        return {
+            enabled: true,
+            score: numericScore,
+            normalized,
+            startScore,
+            targetQuantity: Math.min(maxQty, Math.max(minQty, targetQuantity)),
+            riskFraction: baseRiskFraction + ((maxRiskFraction - baseRiskFraction) * normalized)
+        };
+    }
+
+    _calculatePositionSize({ equity, entryPrice, stopLoss, config = {}, score = null }) {
+        if (Object.keys(config).length === 0) {
+            config = this._applyStrategyPreset(config);
+        }
+        const baseRiskFraction = this._getRiskFraction(config);
+        const baseBalance = this._getTieredBaseBalance(equity, config);
         const slDistance = Math.max(Math.abs(entryPrice - stopLoss), 0.1);
-        const minQty = LOT_MIN_BTC;
-        const maxQty = LOT_MAX_BTC;
+        const minQty = Math.max(LOT_MIN_BTC, this._getConfigNumber('TRADING_MIN_BTC_QTY', LOT_MIN_BTC, config));
+        const maxQty = this._getConfigNumber('TRADING_MAX_BTC_QTY', LOT_MAX_BTC, config);
+        const lotStep = Math.max(LOT_STEP_BTC, this._getConfigNumber('TRADING_LOT_STEP_BTC', LOT_STEP_BTC, config));
+        const confluenceSizing = this._getConfluenceSizing({ score, minQty, maxQty, lotStep, baseRiskFraction, config });
+        const riskFraction = confluenceSizing.riskFraction;
+        const configuredMaxDollarRisk = this._getConfigNumber('MAX_DOLLAR_RISK', 0, config);
+        const maxDollarRisk = Number.isFinite(configuredMaxDollarRisk) && configuredMaxDollarRisk > 0 ? configuredMaxDollarRisk : Infinity;
+        const riskAmount = Math.min(baseBalance * riskFraction, maxDollarRisk);
         const rawQuantity = riskAmount / slDistance;
-        const cappedQuantity = Math.min(maxQty, rawQuantity);
-        const quantity = parseFloat((Math.floor((cappedQuantity + 1e-9) / LOT_STEP_BTC) * LOT_STEP_BTC).toFixed(2));
+        const cappedQuantity = Math.min(maxQty, confluenceSizing.targetQuantity, rawQuantity);
+        const quantity = this._floorLotStep(cappedQuantity, lotStep);
         const actualRisk = quantity * slDistance;
         const minQtyRisk = minQty * slDistance;
         const maxSlPercent = this._getConfigNumber('MAX_SL_PERCENT_OF_PRICE', 0.02, config);
 
         if (slDistance / entryPrice > maxSlPercent) {
-            return { allowed: false, reason: `Stop distance too wide: ${(slDistance / entryPrice * 100).toFixed(2)}%`, riskAmount, slDistance };
+            return { allowed: false, reason: `Stop distance too wide: ${(slDistance / entryPrice * 100).toFixed(2)}%`, riskAmount, slDistance, confluenceSizing };
         }
 
         if (quantity < minQty) {
-            return { allowed: false, reason: `Calculated size below minimum lot; min lot would risk $${minQtyRisk.toFixed(2)}`, riskAmount, slDistance };
+            return { allowed: false, reason: `Calculated size below minimum lot; min lot would risk $${minQtyRisk.toFixed(2)}`, riskAmount, slDistance, confluenceSizing };
         }
 
         if (actualRisk > riskAmount * 1.05) {
-            return { allowed: false, reason: `Actual risk $${actualRisk.toFixed(2)} exceeds allowed risk $${riskAmount.toFixed(2)}`, riskAmount, slDistance };
+            return { allowed: false, reason: `Actual risk $${actualRisk.toFixed(2)} exceeds allowed risk $${riskAmount.toFixed(2)}`, riskAmount, slDistance, confluenceSizing };
         }
 
-        return { allowed: true, quantity, riskAmount, actualRisk, slDistance };
+        return {
+            allowed: true,
+            quantity,
+            riskAmount,
+            actualRisk,
+            slDistance,
+            confluenceSizing,
+            confluenceTargetQuantity: confluenceSizing.targetQuantity,
+            confluenceRiskPercentage: riskFraction * 100
+        };
+    }
+
+    _calculatePartialCloseQuantity(quantity, config = {}) {
+        const minQty = Math.max(LOT_MIN_BTC, this._getConfigNumber('TRADING_MIN_BTC_QTY', LOT_MIN_BTC, config));
+        const lotStep = Math.max(LOT_STEP_BTC, this._getConfigNumber('TRADING_LOT_STEP_BTC', LOT_STEP_BTC, config));
+        const quantitySteps = Math.round(Number(quantity) / lotStep);
+        const partialSteps = Math.floor(quantitySteps / 2);
+        const partialQuantity = parseFloat((partialSteps * lotStep).toFixed(2));
+        const remainingQuantity = parseFloat((Number(quantity) - partialQuantity).toFixed(2));
+
+        if (partialQuantity < minQty || remainingQuantity < minQty) {
+            return null;
+        }
+
+        return partialQuantity;
     }
 
     _calculateSharpeRatio(equityCurve) {
@@ -378,6 +625,7 @@ class TradingBot {
      * @returns {Promise<Object>} Backtest results
      */
     async runBacktest(days = 90, strategy = 'default', config = {}) {
+        config = this._applyStrategyPreset(config);
         days = this._clampConfigNumber('BACKTEST_DAYS', parseInt(days, 10) || 90, 1, 365, { BACKTEST_DAYS: days });
         console.log(`Starting real-time data backtest for ${days} days...`);
         
@@ -515,6 +763,15 @@ class TradingBot {
             }
 
             if (!Array.isArray(config.__historicalData)) {
+                const last = historicalData[historicalData.length - 1];
+                const prev = historicalData[historicalData.length - 2];
+                const inferredGranularity = last && prev
+                    ? Math.max(60, Math.round((new Date(last.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 1000))
+                    : 21600;
+                historicalData = this._filterClosedCandles(historicalData, inferredGranularity, config);
+            }
+
+            if (!Array.isArray(config.__historicalData)) {
                 const cutoff = Date.now() - (days * 24 * 60 * 60 * 1000);
                 const filtered = historicalData.filter(candle => new Date(candle.timestamp).getTime() >= cutoff);
                 if (filtered.length >= 60) {
@@ -524,8 +781,8 @@ class TradingBot {
 
             // 2. Initialize simulation variables
             const trades = [];
-            let equity = 50;
-            const initialEquity = 50;
+            const initialEquity = this._clampConfigNumber('BACKTEST_INITIAL_EQUITY', 50, 1, 1000000, config);
+            let equity = initialEquity;
             const equityCurve = [];
             let activeTrade = null;
             let consecutiveLosses = 0;
@@ -546,6 +803,9 @@ class TradingBot {
             const dailyTradeLimit = this._clampConfigNumber('DAILY_TRADE_LIMIT', 1, 1, 10, config);
             const sessionStartHour = this._clampConfigNumber('BOT_START_HOUR', 0, 0, 23, config);
             const sessionEndHour = this._clampConfigNumber('BOT_END_HOUR', 23, 0, 23, config);
+            const effectiveConfig = this._getEffectiveBacktestConfig(config);
+            const simulationMode = effectiveConfig.simulationMode;
+            const isRealisticValidation = true;
             const recordSkip = (reason) => {
                 skippedSignals++;
                 skippedReasons[reason] = (skippedReasons[reason] || 0) + 1;
@@ -578,7 +838,107 @@ class TradingBot {
                 const dateStr = timestamp.toISOString().split('T')[0];
                 return HIGH_IMPACT_NEWS_DATES.has(dateStr);
             }
-            
+
+            const closeActiveTrade = (referenceExitPrice, exitReason, exitTimestamp) => {
+                if (!activeTrade) return null;
+
+                const exitPrice = activeTrade.action === 'BUY'
+                    ? referenceExitPrice * (1 - slippageRate - spreadRate / 2)
+                    : referenceExitPrice * (1 + slippageRate + spreadRate / 2);
+                const grossPnl = activeTrade.action === 'BUY'
+                    ? (exitPrice - activeTrade.entryPrice) * activeTrade.quantity
+                    : (activeTrade.entryPrice - exitPrice) * activeTrade.quantity;
+                const exitFee = exitPrice * activeTrade.quantity * feeRate;
+                const netPnl = grossPnl - activeTrade.entryFee - exitFee;
+
+                equity += grossPnl - exitFee;
+                totalFees += exitFee;
+                totalSlippageCost += Math.abs(exitPrice - referenceExitPrice) * activeTrade.quantity;
+
+                const lifecyclePnl = isRealisticValidation
+                    ? netPnl + (activeTrade.realizedPartialPnl || 0)
+                    : netPnl;
+
+                if (lifecyclePnl < 0) {
+                    consecutiveLosses++;
+                    dailyLossCount++;
+                    longestLosingStreak = Math.max(longestLosingStreak, consecutiveLosses);
+                    if (consecutiveLosses >= maxDailyLosses) { cooldownCandles = 3; consecutiveLosses = 0; }
+                } else {
+                    consecutiveLosses = 0;
+                    cooldownCandles = 0;
+                }
+
+                activeTrade.pnl = lifecyclePnl;
+                activeTrade.grossPnl = isRealisticValidation
+                    ? grossPnl + (activeTrade.realizedPartialGrossPnl || 0)
+                    : grossPnl;
+                activeTrade.fees = activeTrade.entryFee + exitFee + (isRealisticValidation ? (activeTrade.realizedPartialFees || 0) : 0);
+                activeTrade.exitTimestamp = exitTimestamp;
+                activeTrade.exitReason = exitReason;
+                activeTrade.exitPrice = exitPrice;
+                activeTrade.status = 'CLOSED';
+                trades.push({ ...activeTrade });
+                activeTrade = null;
+
+                return 'closed';
+            };
+
+            const processExitResult = (exitResult, currentCandle) => {
+                if (!activeTrade || !exitResult) return null;
+
+                if (exitResult.partialClose) {
+                    const halfQty = this._calculatePartialCloseQuantity(activeTrade.quantity, config);
+                    if (!halfQty) {
+                        return closeActiveTrade(exitResult.exitPrice, 'Partial TP (Full Close)', currentCandle.timestamp);
+                    }
+
+                    const exitPrice = activeTrade.action === 'BUY'
+                        ? exitResult.exitPrice * (1 - slippageRate - spreadRate / 2)
+                        : exitResult.exitPrice * (1 + slippageRate + spreadRate / 2);
+                    const grossPartialPnl = activeTrade.action === 'BUY'
+                        ? (exitPrice - activeTrade.entryPrice) * halfQty
+                        : (activeTrade.entryPrice - exitPrice) * halfQty;
+                    const exitFee = exitPrice * halfQty * feeRate;
+                    const entryFeeShare = activeTrade.entryFee * 0.5;
+                    const partialPnl = grossPartialPnl - entryFeeShare - exitFee;
+
+                    equity += grossPartialPnl - exitFee;
+                    activeTrade.quantity = parseFloat((activeTrade.quantity - halfQty).toFixed(2));
+                    activeTrade.entryFee -= entryFeeShare;
+                    activeTrade.partialClosed = true;
+                    totalFees += exitFee;
+                    totalSlippageCost += Math.abs(exitPrice - exitResult.exitPrice) * halfQty;
+
+                    if (isRealisticValidation) {
+                        activeTrade.realizedPartialPnl = (activeTrade.realizedPartialPnl || 0) + partialPnl;
+                        activeTrade.realizedPartialGrossPnl = (activeTrade.realizedPartialGrossPnl || 0) + grossPartialPnl;
+                        activeTrade.realizedPartialFees = (activeTrade.realizedPartialFees || 0) + entryFeeShare + exitFee;
+                        activeTrade.partialExitPrice = exitPrice;
+                        activeTrade.partialExitTimestamp = currentCandle.timestamp;
+                        activeTrade.partialQuantity = halfQty;
+                    } else {
+                        trades.push({
+                            ...activeTrade,
+                            quantity: halfQty,
+                            pnl: partialPnl,
+                            exitTimestamp: currentCandle.timestamp,
+                            exitReason: 'Partial TP (50%)',
+                            exitPrice,
+                            status: 'CLOSED_PARTIAL'
+                        });
+                    }
+
+                    return 'partial';
+                }
+
+                if (exitResult.closed) {
+                    return closeActiveTrade(exitResult.exitPrice, exitResult.exitReason, currentCandle.timestamp);
+                }
+
+                return null;
+            };
+
             // 3. Loop through data using UnifiedStrategy logic
             for (let i = 50; i < historicalData.length; i++) {
                 const currentWindow = historicalData.slice(i - 50, i);
@@ -600,72 +960,8 @@ class TradingBot {
                 // Check active trade exit using UnifiedStrategy
                 if (activeTrade) {
                     const exitResult = uStrategy.checkTradeExit(activeTrade, currentCandle);
-                    
-                    if (exitResult.partialClose) {
-                        const halfQty = activeTrade.quantity * 0.5;
-                        const exitPrice = activeTrade.action === 'BUY'
-                            ? exitResult.exitPrice * (1 - slippageRate - spreadRate / 2)
-                            : exitResult.exitPrice * (1 + slippageRate + spreadRate / 2);
-                        const grossPartialPnl = activeTrade.action === 'BUY'
-                            ? (exitPrice - activeTrade.entryPrice) * halfQty
-                            : (activeTrade.entryPrice - exitPrice) * halfQty;
-                        const exitFee = exitPrice * halfQty * feeRate;
-                        const entryFeeShare = activeTrade.entryFee * 0.5;
-                        const partialPnl = grossPartialPnl - entryFeeShare - exitFee;
-                             
-                        equity += grossPartialPnl - exitFee;
-                        activeTrade.quantity -= halfQty;
-                        activeTrade.entryFee -= entryFeeShare;
-                        activeTrade.partialClosed = true;
-                        totalFees += exitFee;
-                        totalSlippageCost += Math.abs(exitPrice - exitResult.exitPrice) * halfQty;
-                        
-                        trades.push({
-                            ...activeTrade,
-                            quantity: halfQty,
-                            pnl: partialPnl,
-                            exitTimestamp: currentCandle.timestamp,
-                            exitReason: 'Partial TP (50%)',
-                            exitPrice,
-                            status: 'CLOSED_PARTIAL'
-                        });
-                        continue;
-                    }
-
-                    if (exitResult.closed) {
-                        const exitPrice = activeTrade.action === 'BUY'
-                            ? exitResult.exitPrice * (1 - slippageRate - spreadRate / 2)
-                            : exitResult.exitPrice * (1 + slippageRate + spreadRate / 2);
-                        const grossPnl = activeTrade.action === 'BUY'
-                            ? (exitPrice - activeTrade.entryPrice) * activeTrade.quantity
-                            : (activeTrade.entryPrice - exitPrice) * activeTrade.quantity;
-                        const exitFee = exitPrice * activeTrade.quantity * feeRate;
-                        const netPnl = grossPnl - activeTrade.entryFee - exitFee;
-
-                        equity += grossPnl - exitFee;
-                        totalFees += exitFee;
-                        totalSlippageCost += Math.abs(exitPrice - exitResult.exitPrice) * activeTrade.quantity;
-                        
-                        if (netPnl < 0) {
-                            consecutiveLosses++;
-                            dailyLossCount++;
-                            longestLosingStreak = Math.max(longestLosingStreak, consecutiveLosses);
-                            if (consecutiveLosses >= maxDailyLosses) { cooldownCandles = 3; consecutiveLosses = 0; }
-                        } else {
-                            consecutiveLosses = 0;
-                            cooldownCandles = 0;
-                        }
-                        
-                        activeTrade.pnl = netPnl;
-                        activeTrade.grossPnl = grossPnl;
-                        activeTrade.fees = activeTrade.entryFee + exitFee;
-                        activeTrade.exitTimestamp = currentCandle.timestamp;
-                        activeTrade.exitReason = exitResult.exitReason;
-                        activeTrade.exitPrice = exitPrice;
-                        activeTrade.status = 'CLOSED';
-                        trades.push({ ...activeTrade });
-                        activeTrade = null;
-                    }
+                    const exitOutcome = processExitResult(exitResult, currentCandle);
+                    if (exitOutcome === 'partial') continue;
                 }
 
                 if (!activeTrade) {
@@ -691,7 +987,7 @@ class TradingBot {
                             const entryPrice = analysis.signal === 'BUY'
                                 ? rawEntryPrice * (1 + slippageRate + spreadRate / 2)
                                 : rawEntryPrice * (1 - slippageRate - spreadRate / 2);
-                            const size = this._calculatePositionSize({ equity, entryPrice, stopLoss: sl, config });
+                            const size = this._calculatePositionSize({ equity, entryPrice, stopLoss: sl, config, score: analysis.score });
                             if (!size.allowed) {
                                 recordSkip(size.reason);
                                 continue;
@@ -706,6 +1002,7 @@ class TradingBot {
                                 action: analysis.signal,
                                 entryPrice,
                                 quantity: size.quantity,
+                                originalQuantity: size.quantity,
                                 sl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
                                 originalSl: analysis.signal === 'BUY' ? rp.stopLoss.long : rp.stopLoss.short,
                                 partialTp: analysis.signal === 'BUY' ? rp.takeProfit.partialLong : rp.takeProfit.partialShort,
@@ -714,6 +1011,8 @@ class TradingBot {
                                 entryFee,
                                 riskAmount: size.riskAmount,
                                 actualRisk: size.actualRisk,
+                                confluenceTargetQuantity: size.confluenceTargetQuantity,
+                                confluenceRiskPercentage: size.confluenceRiskPercentage,
                                 atr: rp.atr,
                                 score: analysis.score,
                                 confluence: analysis.details.confluenceScorer?.details || '',
@@ -721,6 +1020,11 @@ class TradingBot {
                                 status: 'OPEN'
                             };
                             dailyTradeCount++;
+
+                            if (isRealisticValidation) {
+                                const sameCandleExit = uStrategy.checkTradeExit(activeTrade, currentCandle);
+                                processExitResult(sameCandleExit, currentCandle);
+                            }
                         } else if (analysis.score >= uStrategy.CONFLUENCE_THRESHOLD) {
                             const qualityFilters = analysis.details.qualityFilters || [];
                             recordSkip(qualityFilters.length > 0 ? qualityFilters.join('; ') : 'Trend filters blocked trade');
@@ -729,6 +1033,14 @@ class TradingBot {
                 }
 
                 equityCurve.push({ day: equityCurve.length + 1, timestamp: currentCandle.timestamp, equity });
+            }
+
+            if (isRealisticValidation && activeTrade && historicalData.length > 0) {
+                const finalCandle = historicalData[historicalData.length - 1];
+                const finalTimestamp = finalCandle.timestamp instanceof Date ? finalCandle.timestamp : new Date(finalCandle.timestamp);
+                const finalReferencePrice = finalCandle.close || finalCandle.price || activeTrade.entryPrice;
+                closeActiveTrade(finalReferencePrice, 'End of Backtest', finalTimestamp);
+                equityCurve.push({ day: equityCurve.length + 1, timestamp: finalTimestamp, equity });
             }
 
             // 4. Calculate final metrics
@@ -763,6 +1075,12 @@ class TradingBot {
             const sharpeRatio = this._calculateSharpeRatio(equityCurve);
 
             const result = {
+                simulationMode,
+                backtestEngine: 'TradingBot.runBacktest',
+                backtestEngineVersion: 'unified-live-v1',
+                tradeLifecycleAccounting: 'single-position',
+                entryCandleExitCheck: isRealisticValidation,
+                endOfBacktestClose: isRealisticValidation,
                 totalTrades: completedTrades.length,
                 winRate,
                 profitFactor: Math.min(profitFactor, 10),
@@ -771,6 +1089,7 @@ class TradingBot {
                 totalReturn: (equity - initialEquity) / initialEquity,
                 finalEquity: equity,
                 config: this._publicConfig(config),
+                effectiveConfig,
                 dataSource,
                 candlesUsed: historicalData.length,
                 skippedSignals,
@@ -790,10 +1109,20 @@ class TradingBot {
                     entryTimestamp: t.timestamp.toISOString(),
                     exitTimestamp: t.exitTimestamp ? t.exitTimestamp.toISOString() : null,
                     action: t.action, entryPrice: t.entryPrice, exitPrice: t.exitPrice,
-                    quantity: t.quantity, pnl: t.pnl, sl: t.sl, originalSl: t.originalSl,
+                    quantity: isRealisticValidation ? (t.originalQuantity || t.quantity) : t.quantity,
+                    remainingQuantity: t.quantity,
+                    originalQuantity: t.originalQuantity || t.quantity,
+                    pnl: t.pnl, sl: t.sl, originalSl: t.originalSl,
                     tp1: t.partialTp, tp2: t.finalTp, score: t.score, confluence: t.confluence,
                     fees: t.fees || 0, riskAmount: t.riskAmount, actualRisk: t.actualRisk,
-                    exitReason: t.exitReason
+                    confluenceTargetQuantity: t.confluenceTargetQuantity,
+                    confluenceRiskPercentage: t.confluenceRiskPercentage,
+                    exitReason: t.exitReason,
+                    partialClosed: !!t.partialClosed,
+                    partialExitPrice: t.partialExitPrice || null,
+                    partialExitTimestamp: t.partialExitTimestamp ? t.partialExitTimestamp.toISOString() : null,
+                    partialQuantity: t.partialQuantity || null,
+                    partialPnl: t.realizedPartialPnl || 0
                 }))
             };
 
@@ -810,22 +1139,76 @@ class TradingBot {
     }
 
     _getOptimizationCandidates() {
-        const safeBaseConfig = {
-            RISK_PERCENTAGE: 1,
-            MAX_DOLLAR_RISK: 0.5,
+        const growthBaseConfig = {
+            STRATEGY_PRESET: 'unified',
+            RISK_PERCENTAGE: 5,
             DAILY_TRADE_LIMIT: 1,
             MAX_DAILY_LOSSES: 1,
-            MIN_CONFLUENCE_SCORE: 6,
-            ADX_THRESHOLD: 22,
-            ATR_STOP_MULTIPLIER: 1.25,
-            FINAL_TP_RR: 2.5,
-            MAX_ATR_PERCENT_OF_PRICE: 0.025,
+            MIN_CONFLUENCE_SCORE: 4,
+            ADX_THRESHOLD: 18,
+            ATR_STOP_MULTIPLIER: 0.05,
+            MAX_ATR_PERCENT_OF_PRICE: 0.08,
+            PARTIAL_TP_RR: 100,
+            FINAL_TP_RR: 100,
+            BREAKEVEN_TRIGGER_RR: 1,
+            TRAILING_START_RR: 1,
+            TRAILING_STOP_ATR_MULTIPLIER: 2,
+            MAX_SL_PERCENT_OF_PRICE: 0.02,
+            CONFLUENCE_LOT_SCALING: true,
+            CONFLUENCE_LOT_START_SCORE: 8,
+            CONFLUENCE_MAX_RISK_PERCENTAGE: 20,
+            TRADING_MIN_BTC_QTY: 0.01,
+            TRADING_MAX_BTC_QTY: 0.08,
+            TRADING_LOT_STEP_BTC: 0.01,
             BACKTEST_FEE_RATE: 0.001,
             BACKTEST_SLIPPAGE_RATE: 0.0005,
             BACKTEST_SPREAD_RATE: 0.0002
         };
 
+        const unifiedBaseConfig = {
+            ...growthBaseConfig,
+            MIN_CONFLUENCE_SCORE: 6,
+            MIN_SCORE_EDGE: 3,
+            REJECT_TIE_SCORE: false,
+            REQUIRE_DIRECTIONAL_TRIGGER: false,
+            MIN_EMA_SEPARATION: 0,
+            MAX_SIGNAL_RANGE_ATR: 3.5,
+            ADX_THRESHOLD: 33,
+            ATR_STOP_MULTIPLIER: 0.2,
+            FINAL_TP_RR: 2,
+            BREAKEVEN_TRIGGER_RR: 1.5,
+            TRAILING_START_RR: 0.6,
+            TRAILING_STOP_ATR_MULTIPLIER: 1,
+            MAX_ATR_PERCENT_OF_PRICE: 0.04,
+            MAX_SL_PERCENT_OF_PRICE: 0.04,
+            CONFLUENCE_LOT_SCALING: true,
+            CONFLUENCE_MAX_RISK_PERCENTAGE: 7.5,
+            DAILY_TRADE_LIMIT: 1,
+            TRADING_MAX_BTC_QTY: 0.06,
+            BOT_START_HOUR: 8,
+            BOT_END_HOUR: 23
+        };
+
+        const safeBaseConfig = {
+            ...unifiedBaseConfig,
+            RISK_PERCENTAGE: 1,
+            MAX_DOLLAR_RISK: 0.5,
+            MIN_CONFLUENCE_SCORE: 6,
+            ADX_THRESHOLD: 22,
+            ATR_STOP_MULTIPLIER: 1.25,
+            FINAL_TP_RR: 2.5,
+            MAX_ATR_PERCENT_OF_PRICE: 0.025,
+            CONFLUENCE_LOT_SCALING: false,
+            MAX_SL_PERCENT_OF_PRICE: 0.02
+        };
+
         return [
+            { label: 'growth_profile_4_100r', config: growthBaseConfig },
+            { label: 'growth_relaxed_edge_4_100r', config: { ...growthBaseConfig, MIN_SCORE_EDGE: 1, REJECT_TIE_SCORE: false, REQUIRE_DIRECTIONAL_TRIGGER: false, MIN_EMA_SEPARATION: 0 } },
+            { label: 'growth_directional_4_100r', config: { ...growthBaseConfig, MIN_SCORE_EDGE: 1, REJECT_TIE_SCORE: true, REQUIRE_DIRECTIONAL_TRIGGER: true, MIN_EMA_SEPARATION: 0 } },
+            { label: 'selected_unified_adaptive_v5', config: unifiedBaseConfig },
+            { label: 'balanced_relaxed_4_2r', config: { ...unifiedBaseConfig, MIN_CONFLUENCE_SCORE: 4, MIN_SCORE_EDGE: 2, MIN_EMA_SEPARATION: 0 } },
+            { label: 'balanced_wide_target_4_3r', config: { ...unifiedBaseConfig, MIN_CONFLUENCE_SCORE: 4, MIN_SCORE_EDGE: 2, MIN_EMA_SEPARATION: 0, FINAL_TP_RR: 3 } },
             { label: 'safe_baseline_1pct', config: safeBaseConfig },
             { label: 'strict_quality_1pct', config: { ...safeBaseConfig, MIN_CONFLUENCE_SCORE: 7, ADX_THRESHOLD: 25 } },
             { label: 'tighter_stop_1pct', config: { ...safeBaseConfig, ATR_STOP_MULTIPLIER: 1.0 } },
@@ -862,7 +1245,9 @@ class TradingBot {
                     expectancy: result.expectancy,
                     averageRMultiple: result.averageRMultiple,
                     skippedSignals: result.skippedSignals,
-                    score: result.totalTrades >= 3 ? result.totalReturn - result.maxDrawdown + (result.profitFactor > 1 ? 0.01 : 0) : -999
+                    score: result.totalTrades >= 3 && result.profitFactor > 1 && result.totalReturn > 0 && result.maxDrawdown <= 0.9
+                        ? result.totalReturn - result.maxDrawdown + Math.min(result.profitFactor, 5) * 0.01 + Math.max(result.expectancy, 0) * 0.001
+                        : -999
                 };
                 results.push(summary);
             }

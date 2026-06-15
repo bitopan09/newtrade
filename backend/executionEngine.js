@@ -1,11 +1,13 @@
 const sqlite3 = require('sqlite3').verbose();
 const dotenv = require('dotenv');
 const notificationService = require('./emailService');
+const UnifiedStrategy = require('./unifiedStrategy');
+const { UNIFIED_PRESET_CONFIG } = require('./strategyConfig');
 
 dotenv.config();
 
 const LOT_MIN_BTC = 0.01;
-const LOT_MAX_BTC = 0.04;
+const LOT_MAX_BTC = 0.06;
 const LOT_STEP_BTC = 0.01;
 
 class ExecutionEngine {
@@ -18,9 +20,17 @@ class ExecutionEngine {
         this.trailingStopAtrMultiplier = this._getNumberEnv('TRAILING_STOP_ATR_MULTIPLIER', 2);
         this.breakevenTriggerRr = this._getNumberEnv('BREAKEVEN_TRIGGER_RR', 1);
         this.trailingStartRr = this._getNumberEnv('TRAILING_START_RR', 1);
+        this.lotMin = this._getNumberEnv('TRADING_MIN_BTC_QTY', LOT_MIN_BTC);
+        this.lotMax = this._getNumberEnv('TRADING_MAX_BTC_QTY', LOT_MAX_BTC);
+        this.lotStep = this._getNumberEnv('TRADING_LOT_STEP_BTC', LOT_STEP_BTC);
+        this.strategy = new UnifiedStrategy();
     }
 
     _getNumberEnv(name, fallback) {
+        const preset = String(process.env.STRATEGY_PRESET || 'unified').toLowerCase();
+        const presetValue = UNIFIED_PRESET_CONFIG[name];
+        if (preset === 'unified' && typeof presetValue === 'number') return presetValue;
+
         const value = Number(process.env[name]);
         return Number.isFinite(value) ? value : fallback;
     }
@@ -36,10 +46,10 @@ class ExecutionEngine {
                     reject(err);
                 } else {
                     rows.forEach(row => {
-                        this.activeTrades.set(row.id, {
+                        this.activeTrades.set(row.id, this._normalizeTradeFields({
                             ...row,
                             timestamp: new Date(row.timestamp)
-                        });
+                        }));
                     });
                     console.log(`Loaded ${rows.length} open trades into memory.`);
                     resolve(rows);
@@ -77,14 +87,15 @@ class ExecutionEngine {
             return { success: false, reason: 'Invalid trade quantity' };
         }
 
-        if (requestedQuantity < LOT_MIN_BTC || requestedQuantity > LOT_MAX_BTC) {
-            return { success: false, reason: `Lot size must be between ${LOT_MIN_BTC} and ${LOT_MAX_BTC} BTC` };
+        if (requestedQuantity < this.lotMin || requestedQuantity > this.lotMax) {
+            return { success: false, reason: `Lot size must be between ${this.lotMin} and ${this.lotMax} BTC` };
         }
 
-        const lotSteps = Math.round(requestedQuantity / LOT_STEP_BTC);
-        const normalizedQuantity = parseFloat((lotSteps * LOT_STEP_BTC).toFixed(2));
+        const lotSteps = Math.round(requestedQuantity / this.lotStep);
+        const decimals = Math.max(0, Math.min(8, (String(this.lotStep).split('.')[1] || '').length));
+        const normalizedQuantity = parseFloat((lotSteps * this.lotStep).toFixed(decimals));
         if (Math.abs(requestedQuantity - normalizedQuantity) > 1e-9) {
-            return { success: false, reason: 'Lot size must be exactly one of 0.01, 0.02, 0.03, or 0.04 BTC' };
+            return { success: false, reason: `Lot size must align to ${this.lotStep} BTC steps` };
         }
 
         const tradeQuantity = normalizedQuantity;
@@ -117,10 +128,20 @@ class ExecutionEngine {
                         userId,
                         action,
                         entry_price: entryPrice,
+                        entryPrice,
                         quantity: tradeQuantity,
                         timestamp,
                         status: 'OPEN',
-                        sl, originalSl: signal.originalSl || sl, tp1, tp2, score, notes, atr, partialClosed: false
+                        sl,
+                        originalSl: signal.originalSl || sl,
+                        tp1,
+                        tp2,
+                        partialTp: tp1,
+                        finalTp: tp2,
+                        score,
+                        notes,
+                        atr,
+                        partialClosed: false
                     };
 
                     // Add to active trades
@@ -144,77 +165,66 @@ class ExecutionEngine {
      * @param {number} currentPrice - Current market price
      */
     monitorTrades(currentPrice) {
+        if (!Number.isFinite(Number(currentPrice))) return;
+
+        const marketCandle = {
+            high: Number(currentPrice),
+            low: Number(currentPrice),
+            close: Number(currentPrice),
+            price: Number(currentPrice)
+        };
+
         for (const [tradeId, trade] of this.activeTrades.entries()) {
             if (trade.status !== 'OPEN') continue;
 
-            let exitPrice = null;
-            let exitReason = '';
+            const normalizedTrade = this._normalizeTradeFields(trade);
+            if (!normalizedTrade) continue;
 
-            // === TRAILING STOP LOSS & PARTIAL TP LOGIC ===
-            if (trade.action === 'BUY') {
-                // Partial TP Check
-                if (!trade.partialClosed && currentPrice >= trade.tp1) {
-                    this._partialCloseTrade(tradeId, trade.tp1);
-                    continue; // Skip the rest this tick
-                }
+            const exitResult = this.strategy.checkTradeExit(normalizedTrade, marketCandle);
 
-                if (trade.partialClosed && trade.tp2 && currentPrice >= trade.tp2) {
-                    exitPrice = trade.tp2;
-                    exitReason = 'Final TP';
+            if (exitResult?.partialClose) {
+                const partialClosed = this._partialCloseTrade(tradeId, exitResult.exitPrice);
+                if (!partialClosed) {
+                    this._closeTrade(tradeId, exitResult.exitPrice, 'Partial TP (Full Close)');
                 }
-
-                // Chandelier Trailing Logic
-                trade.highestPrice = Math.max(trade.highestPrice || trade.entry_price, currentPrice);
-                const trailTrigger = trade.entry_price + ((trade.entry_price - (trade.originalSl || trade.sl)) * this.trailingStartRr);
-                if (trade.highestPrice >= trailTrigger) {
-                    const chandelierStop = trade.highestPrice - (trade.atr * this.trailingStopAtrMultiplier);
-                    trade.sl = Math.max(trade.sl, chandelierStop);
-                }
-
-                const breakevenTrigger = trade.entry_price + ((trade.entry_price - (trade.originalSl || trade.sl)) * this.breakevenTriggerRr);
-                if (trade.partialClosed || trade.highestPrice >= breakevenTrigger) {
-                    trade.sl = Math.max(trade.sl, trade.entry_price);
-                }
-
-                if (exitPrice === null && currentPrice <= trade.sl) {
-                    exitPrice = trade.sl;
-                    exitReason = trade.sl >= trade.entry_price ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
-                }
-            } else if (trade.action === 'SELL') {
-                // Partial TP Check
-                if (!trade.partialClosed && currentPrice <= trade.tp1) {
-                    this._partialCloseTrade(tradeId, trade.tp1);
-                    continue;
-                }
-
-                if (trade.partialClosed && trade.tp2 && currentPrice <= trade.tp2) {
-                    exitPrice = trade.tp2;
-                    exitReason = 'Final TP';
-                }
-
-                // Chandelier Trailing Logic
-                trade.lowestPrice = Math.min(trade.lowestPrice || trade.entry_price, currentPrice);
-                const trailTrigger = trade.entry_price - (((trade.originalSl || trade.sl) - trade.entry_price) * this.trailingStartRr);
-                if (trade.lowestPrice <= trailTrigger) {
-                    const chandelierStop = trade.lowestPrice + (trade.atr * this.trailingStopAtrMultiplier);
-                    trade.sl = Math.min(trade.sl, chandelierStop);
-                }
-
-                const breakevenTrigger = trade.entry_price - (((trade.originalSl || trade.sl) - trade.entry_price) * this.breakevenTriggerRr);
-                if (trade.partialClosed || trade.lowestPrice <= breakevenTrigger) {
-                    trade.sl = Math.min(trade.sl, trade.entry_price);
-                }
-
-                if (exitPrice === null && currentPrice >= trade.sl) {
-                    exitPrice = trade.sl;
-                    exitReason = trade.sl <= trade.entry_price ? 'Trailing SL (Breakeven+)' : 'Stop Loss';
-                }
+                continue;
             }
 
-            if (exitPrice !== null) {
-                this._closeTrade(tradeId, exitPrice, exitReason);
+            if (exitResult?.closed) {
+                this._closeTrade(tradeId, exitResult.exitPrice, exitResult.exitReason);
             }
         }
+    }
+
+    _normalizeTradeFields(trade) {
+        if (!trade) return null;
+
+        const entryPrice = Number(trade.entryPrice ?? trade.entry_price);
+        trade.entryPrice = Number.isFinite(entryPrice) ? entryPrice : 0;
+        trade.entry_price = trade.entry_price ?? trade.entryPrice;
+        trade.originalSl = Number(trade.originalSl ?? trade.original_sl ?? trade.sl);
+        trade.partialTp = Number(trade.partialTp ?? trade.tp1);
+        trade.finalTp = trade.finalTp ?? trade.tp2 ?? null;
+        trade.partialClosed = trade.partialClosed === true || trade.partial_closed === true || trade.partial_closed === 1;
+
+        if (!Number.isFinite(Number(trade.atr))) {
+            trade.atr = 500;
+        }
+
+        return trade;
+    }
+
+    _getPartialCloseQuantity(quantity) {
+        const quantitySteps = Math.round(Number(quantity) / this.lotStep);
+        const partialSteps = Math.floor(quantitySteps / 2);
+        const partialQuantity = parseFloat((partialSteps * this.lotStep).toFixed(2));
+        const remainingQuantity = parseFloat((Number(quantity) - partialQuantity).toFixed(2));
+
+        if (partialQuantity < this.lotMin || remainingQuantity < this.lotMin) {
+            return null;
+        }
+
+        return partialQuantity;
     }
 
     /**
@@ -223,10 +233,12 @@ class ExecutionEngine {
      * @param {number} exitPrice - Exit price
      */
     _partialCloseTrade(tradeId, exitPrice) {
-        const trade = this.activeTrades.get(tradeId);
-        if (!trade) return;
+        const trade = this._normalizeTradeFields(this.activeTrades.get(tradeId));
+        if (!trade) return false;
 
-        const halfQty = trade.quantity * 0.5;
+        const halfQty = this._getPartialCloseQuantity(trade.quantity);
+        if (!halfQty) return false;
+
         let partialPnl = 0;
         if (trade.action === 'BUY') {
             partialPnl = (exitPrice - trade.entry_price) * halfQty;
@@ -234,8 +246,13 @@ class ExecutionEngine {
             partialPnl = (trade.entry_price - exitPrice) * halfQty;
         }
 
-        trade.quantity -= halfQty;
+        trade.quantity = parseFloat((trade.quantity - halfQty).toFixed(2));
+        trade.remainingQuantity = trade.quantity;
         trade.partialClosed = true;
+        trade.partialPnl = (trade.partialPnl || 0) + partialPnl;
+        trade.partialQuantity = (trade.partialQuantity || 0) + halfQty;
+        trade.partialExitPrice = exitPrice;
+        trade.partialExitTimestamp = new Date();
 
         const userId = trade.userId || 'default';
 
@@ -254,7 +271,8 @@ class ExecutionEngine {
             }
         });
 
-        this._sendAlert(`[${userId}] Partial TP Hit: ${trade.action} ${halfQty} BTC at $${exitPrice.toFixed(2)}. SL moved to BE.`);
+        this._sendAlert(`[${userId}] Partial TP Hit: ${trade.action} ${halfQty.toFixed(2)} BTC at $${exitPrice.toFixed(2)}. SL moved to BE.`);
+        return true;
     }
 
     /**
@@ -264,20 +282,23 @@ class ExecutionEngine {
      * @param {string} reason - Reason for closing
      */
     _closeTrade(tradeId, exitPrice, reason) {
-        const trade = this.activeTrades.get(tradeId);
+        const trade = this._normalizeTradeFields(this.activeTrades.get(tradeId));
         if (!trade) return { success: false, reason: 'Trade not in memory' };
 
         // Calculate PnL
-        let pnl = 0;
+        let finalPnl = 0;
         if (trade.action === 'BUY') {
-            pnl = (exitPrice - trade.entry_price) * trade.quantity;
+            finalPnl = (exitPrice - trade.entry_price) * trade.quantity;
         } else if (trade.action === 'SELL') {
-            pnl = (trade.entry_price - exitPrice) * trade.quantity;
+            finalPnl = (trade.entry_price - exitPrice) * trade.quantity;
         }
+
+        const pnl = finalPnl + (trade.partialPnl || 0);
 
         // Update trade object
         trade.exit_price = exitPrice;
         trade.pnl = pnl;
+        trade.finalPnl = finalPnl;
         trade.status = 'CLOSED';
         trade.exit_reason = reason;
         trade.exit_timestamp = new Date();
@@ -301,12 +322,12 @@ class ExecutionEngine {
                     // Update user balance
                     this.db.get(`SELECT * FROM balance WHERE userId = ? ORDER BY timestamp DESC LIMIT 1`, [userId], (err, balance) => {
                         if (!err && balance) {
-                            const newBalance = balance.usd_balance + pnl;
+                            const newBalance = balance.usd_balance + finalPnl;
                             this.db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, ?)`, 
                                 [userId, newBalance, balance.btc_balance]);
                         } else if (!err && !balance) {
-                            // Create initial balance if missing (50 starting)
-                            const initialBalance = 50 + pnl;
+                            // Create initial balance if missing (100 starting)
+                            const initialBalance = 100 + pnl;
                             this.db.run(`INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, ?)`, 
                                 [userId, initialBalance, 0]);
                         }

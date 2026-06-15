@@ -6,18 +6,7 @@ const Backtester = () => {
     const [savedRuns, setSavedRuns] = useState([]);
     const [isRunning, setIsRunning] = useState(false);
     const [settings, setSettings] = useState({
-        days: 90,
-        riskPercentage: 5,
-        maxDailyTrades: 1,
-        maxDailyLosses: 1,
-        minConfluenceScore: 4,
-        adxThreshold: 18,
-        atrStopMultiplier: 0.05,
-        finalTpRr: 100,
-        maxAtrPercent: 8,
-        feeRate: 0.1,
-        slippageRate: 0.05,
-        spreadRate: 0.02
+        days: 90
     });
 
     const updateSetting = (name, value) => {
@@ -29,19 +18,13 @@ const Backtester = () => {
         return Number.isFinite(value) ? value : fallback;
     };
 
-    const buildBacktestConfig = () => ({
-        RISK_PERCENTAGE: numberSetting('riskPercentage', 5),
-        DAILY_TRADE_LIMIT: numberSetting('maxDailyTrades', 1),
-        MAX_DAILY_LOSSES: numberSetting('maxDailyLosses', 1),
-        MIN_CONFLUENCE_SCORE: numberSetting('minConfluenceScore', 4),
-        ADX_THRESHOLD: numberSetting('adxThreshold', 18),
-        ATR_STOP_MULTIPLIER: numberSetting('atrStopMultiplier', 0.05),
-        FINAL_TP_RR: numberSetting('finalTpRr', 100),
-        MAX_ATR_PERCENT_OF_PRICE: numberSetting('maxAtrPercent', 8) / 100,
-        BACKTEST_FEE_RATE: numberSetting('feeRate', 0.1) / 100,
-        BACKTEST_SLIPPAGE_RATE: numberSetting('slippageRate', 0.05) / 100,
-        BACKTEST_SPREAD_RATE: numberSetting('spreadRate', 0.02) / 100
-    });
+    const buildBacktestConfig = () => ({ BACKTEST_INITIAL_EQUITY: 50 });
+
+    const csvEscape = (value) => {
+        if (value === null || value === undefined) return '';
+        const text = String(value);
+        return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
 
     const loadSavedRuns = async () => {
         try {
@@ -104,54 +87,90 @@ const Backtester = () => {
     const createCsv = (sourceResults) => {
         if (!sourceResults) return '';
 
-        let csv = `Backtest Summary (${settings.days} Days)\n`;
-        csv += `Run ID,${sourceResults.runId || ''}\n`;
-        csv += `Metric,Value\n`;
-        csv += `Total Trades,${sourceResults.totalTrades}\n`;
-        csv += `Win Rate,${(sourceResults.winRate * 100).toFixed(1)}%\n`;
-        csv += `Profit Factor,${sourceResults.profitFactor.toFixed(2)}\n`;
-        csv += `Max Drawdown,${(sourceResults.maxDrawdown * 100).toFixed(1)}%\n`;
-        csv += `Sharpe Ratio,${sourceResults.sharpeRatio.toFixed(2)}\n`;
-        csv += `Total Return,${(sourceResults.totalReturn * 100).toFixed(1)}%\n`;
-        csv += `Final Equity,$${(sourceResults.finalEquity || 50 + sourceResults.totalReturn * 50).toFixed(2)}\n`;
-        csv += `Expectancy,$${(sourceResults.expectancy || 0).toFixed(2)}\n`;
-        csv += `Average R,${(sourceResults.averageRMultiple || 0).toFixed(2)}\n`;
-        csv += `Fees Paid,$${(sourceResults.totalFees || 0).toFixed(2)}\n`;
-        csv += `Slippage Cost,$${(sourceResults.totalSlippageCost || 0).toFixed(2)}\n`;
-        csv += `Skipped Signals,${sourceResults.skippedSignals || 0}\n`;
-        csv += `Long Win Rate,${((sourceResults.longWinRate || 0) * 100).toFixed(1)}%\n`;
-        csv += `Short Win Rate,${((sourceResults.shortWinRate || 0) * 100).toFixed(1)}%\n`;
-        csv += `Lot Size Range,0.01 - 0.04\n\n`;
+        const rows = [];
+        rows.push(['Backtest Summary', `${settings.days} Days`]);
+        rows.push(['Run ID', sourceResults.runId || '']);
+        rows.push(['Engine', sourceResults.backtestEngine || 'TradingBot.runBacktest']);
+        rows.push(['Engine Version', sourceResults.backtestEngineVersion || 'unified-live-v1']);
+        rows.push(['Signal Logic', 'Unified live/backtest logic']);
+        rows.push(['Trade Accounting', sourceResults.tradeLifecycleAccounting || 'single-position']);
+        rows.push([]);
+        rows.push(['Metric', 'Value']);
+        rows.push(['Total Trades', sourceResults.totalTrades || 0]);
+        rows.push(['Win Rate %', ((sourceResults.winRate || 0) * 100).toFixed(2)]);
+        rows.push(['Profit Factor', (sourceResults.profitFactor || 0).toFixed(2)]);
+        rows.push(['Max Drawdown %', ((sourceResults.maxDrawdown || 0) * 100).toFixed(2)]);
+        rows.push(['Sharpe Ratio', (sourceResults.sharpeRatio || 0).toFixed(2)]);
+        rows.push(['Total Return %', ((sourceResults.totalReturn || 0) * 100).toFixed(2)]);
+        rows.push(['Final Equity', (sourceResults.finalEquity || 0).toFixed(2)]);
+        rows.push(['Expectancy', (sourceResults.expectancy || 0).toFixed(2)]);
+        rows.push(['Average R', (sourceResults.averageRMultiple || 0).toFixed(2)]);
+        rows.push(['Fees Paid', (sourceResults.totalFees || 0).toFixed(2)]);
+        rows.push(['Slippage Cost', (sourceResults.totalSlippageCost || 0).toFixed(2)]);
+        rows.push(['Skipped Signals', sourceResults.skippedSignals || 0]);
+        rows.push(['Long Win Rate %', ((sourceResults.longWinRate || 0) * 100).toFixed(2)]);
+        rows.push(['Short Win Rate %', ((sourceResults.shortWinRate || 0) * 100).toFixed(2)]);
+        rows.push([]);
+
+        if (sourceResults.effectiveConfig) {
+            rows.push(['Effective Settings']);
+            rows.push(['Key', 'Value']);
+            Object.entries(sourceResults.effectiveConfig).forEach(([key, value]) => {
+                rows.push([key, value]);
+            });
+            rows.push([]);
+        }
 
         if (sourceResults.skippedReasons && Object.keys(sourceResults.skippedReasons).length > 0) {
-            csv += 'Skipped Reasons\n';
-            csv += 'Reason,Count\n';
+            rows.push(['Skipped Reasons']);
+            rows.push(['Reason', 'Count']);
             Object.entries(sourceResults.skippedReasons).forEach(([reason, count]) => {
-                csv += `"${reason}",${count}\n`;
+                rows.push([reason, count]);
             });
-            csv += '\n';
+            rows.push([]);
         }
 
-        csv += 'Equity Curve\n';
-        csv += 'Day,Equity\n';
-        sourceResults.equityCurve.forEach(point => {
-            csv += `${point.day},${point.equity.toFixed(2)}\n`;
+        rows.push(['Equity Curve']);
+        rows.push(['Point', 'Timestamp', 'Equity']);
+        (sourceResults.equityCurve || []).forEach(point => {
+            rows.push([point.day, point.timestamp || '', (point.equity || 0).toFixed(2)]);
         });
+        rows.push([]);
 
         if (sourceResults.trades && sourceResults.trades.length > 0) {
-            csv += '\nIndividual Trades\n';
-            csv += 'ID,Timestamp,Exit Timestamp,Action,Lot Size,Entry Price,Exit Price,SL1,SL2 (Final),TP1,TP2,PnL,Score,Confluence,Reason\n';
+            rows.push(['Trades']);
+            rows.push(['ID', 'Entry Time', 'Exit Time', 'Side', 'Quantity', 'Remaining Qty', 'Entry', 'Exit', 'Original SL', 'Final SL', 'TP1', 'TP2', 'Partial Closed', 'Partial Exit', 'Partial PnL', 'Net PnL', 'Fees', 'Risk Amount', 'Actual Risk', 'Target Lot', 'Risk %', 'Score', 'Exit Reason', 'Confluence']);
             sourceResults.trades.forEach(trade => {
-                const entryTime = trade.entryTimestamp || trade.timestamp;
-                const exitTime = trade.exitTimestamp || '';
-                const score = trade.score || '';
-                const confluence = trade.confluence ? `"${trade.confluence}"` : '';
-                const reason = trade.exitReason || '';
-                csv += `${trade.id},${entryTime},${exitTime},${trade.action},${trade.quantity?.toFixed(4) || '0.01'},${trade.entryPrice.toFixed(2)},${trade.exitPrice?.toFixed(2) || ''},${trade.originalSl?.toFixed(2) || trade.sl?.toFixed(2) || ''},${trade.sl?.toFixed(2) || ''},${trade.tp1?.toFixed(2) || ''},${trade.tp2?.toFixed(2) || ''},${trade.pnl?.toFixed(2) || ''},${score},${confluence},${reason}\n`;
+                rows.push([
+                    trade.id,
+                    trade.entryTimestamp || trade.timestamp || '',
+                    trade.exitTimestamp || '',
+                    trade.action || '',
+                    trade.quantity !== undefined ? Number(trade.quantity).toFixed(2) : '',
+                    trade.remainingQuantity !== undefined ? Number(trade.remainingQuantity).toFixed(2) : '',
+                    trade.entryPrice ?? '',
+                    trade.exitPrice ?? '',
+                    trade.originalSl ?? '',
+                    trade.sl ?? '',
+                    trade.tp1 ?? '',
+                    trade.tp2 ?? '',
+                    trade.partialClosed ? 'yes' : 'no',
+                    trade.partialExitPrice ?? '',
+                    trade.partialPnl ?? '',
+                    trade.pnl ?? '',
+                    trade.fees ?? '',
+                    trade.riskAmount ?? '',
+                    trade.actualRisk ?? '',
+                    trade.confluenceTargetQuantity !== undefined ? Number(trade.confluenceTargetQuantity).toFixed(2) : '',
+                    trade.confluenceRiskPercentage !== undefined ? Number(trade.confluenceRiskPercentage).toFixed(2) : '',
+                    trade.score ?? '',
+                    trade.exitReason || '',
+                    trade.confluence || ''
+                ]);
             });
         }
 
-        return csv;
+        return rows.map(row => row.map(csvEscape).join(',')).join('\n');
     };
 
     const downloadCsv = (sourceResults = results) => {
@@ -187,36 +206,21 @@ const Backtester = () => {
             </div>
 
             <div className="backtester-note">
-                <strong>Dynamic Lot:</strong> 0.01 – 0.04 BTC (risk-based, skipped if risk is too high)
+                <strong>Unified Logic:</strong> Backtest and bot use the same closed-candle signal logic, realistic trade accounting, and risk settings.
             </div>
 
             <div className="backtester-settings-grid">
-                {[
-                    ['days', 'Days', 30, 365, 1],
-                    ['riskPercentage', 'Risk %', 0.25, 5, 0.25],
-                    ['maxDailyTrades', 'Trades/Day', 1, 5, 1],
-                    ['maxDailyLosses', 'Losses/Day', 1, 5, 1],
-                    ['minConfluenceScore', 'Score', 1, 10, 1],
-                    ['adxThreshold', 'ADX', 10, 40, 1],
-                    ['atrStopMultiplier', 'SL ATR', 0.01, 3, 0.01],
-                    ['finalTpRr', 'Final TP R', 1, 100, 0.5],
-                    ['maxAtrPercent', 'Max ATR %', 0.5, 8, 0.25],
-                    ['feeRate', 'Fee %', 0, 0.5, 0.01],
-                    ['slippageRate', 'Slippage %', 0, 0.5, 0.01],
-                    ['spreadRate', 'Spread %', 0, 0.5, 0.01]
-                ].map(([name, label, min, max, step]) => (
-                    <label key={name}>
-                        {label}
-                        <input
-                            type="number"
-                            min={min}
-                            max={max}
-                            step={step}
-                            value={settings[name]}
-                            onChange={(event) => updateSetting(name, event.target.value)}
-                        />
-                    </label>
-                ))}
+                <label>
+                    Days
+                    <input
+                        type="number"
+                        min="30"
+                        max="365"
+                        step="1"
+                        value={settings.days}
+                        onChange={(event) => updateSetting('days', event.target.value)}
+                    />
+                </label>
             </div>
 
             <div className="backtester-controls">
@@ -234,7 +238,7 @@ const Backtester = () => {
                     <h4>Saved Backtest Runs</h4>
                     {savedRuns.map(run => (
                         <div key={run.id} className="saved-run-row">
-                            <span>#{run.id} | {new Date(run.timestamp).toLocaleString()} | {run.total_trades} trades | PF {(run.profit_factor || 0).toFixed(2)} | Return {((run.total_return || 0) * 100).toFixed(2)}%</span>
+                            <span>#{run.id} | Unified | {new Date(run.timestamp).toLocaleString()} | {run.total_trades} trades | PF {(run.profit_factor || 0).toFixed(2)} | Return {((run.total_return || 0) * 100).toFixed(2)}%</span>
                             <a href={`${API_BASE_URL}/backtest/results/${run.id}/export?userId=${encodeURIComponent(getCurrentUserId())}&accessToken=${encodeURIComponent(getTerminalAccessToken())}`}>CSV</a>
                         </div>
                     ))}
@@ -244,6 +248,9 @@ const Backtester = () => {
             {results && (
                 <div className="backtester-results">
                     <h3>Backtest Results ({settings.days} days)</h3>
+                    <div className="backtester-note">
+                        <strong>Logic:</strong> Unified live/backtest | <strong>Accounting:</strong> {results.tradeLifecycleAccounting || 'single-position'} | <strong>Engine:</strong> {results.backtestEngineVersion || 'unified-live-v1'}
+                    </div>
                     {results.runId && (
                         <p className="saved-run-message">Saved run #{results.runId}. CSV auto-download was triggered after completion.</p>
                     )}
@@ -310,22 +317,22 @@ const Backtester = () => {
                         <div className="lot-stats-grid">
                             <div className="lot-stat min">
                                 <div>Min Lot</div>
-                                <strong>{lotStats.minLot.toFixed(4)}</strong>
+                                <strong>{lotStats.minLot.toFixed(2)}</strong>
                             </div>
                             <div className="lot-stat avg">
                                 <div>Avg Lot</div>
-                                <strong>{lotStats.avgLot.toFixed(4)}</strong>
+                                <strong>{lotStats.avgLot.toFixed(2)}</strong>
                             </div>
                             <div className="lot-stat max">
                                 <div>Max Lot</div>
-                                <strong>{lotStats.maxLot.toFixed(4)}</strong>
+                                <strong>{lotStats.maxLot.toFixed(2)}</strong>
                             </div>
                         </div>
                     )}
 
                     <div className="equity-curve-placeholder">
                         <h4>Equity Curve</h4>
-                        <p>Total Equity: ${(results.finalEquity || 50 + results.totalReturn * 50).toFixed(2)} (Initial: $50.00)</p>
+                        <p>Total Equity: ${(results.finalEquity || 50 + results.totalReturn * 50).toFixed(2)} (Initial: ${(results.effectiveConfig?.BACKTEST_INITIAL_EQUITY || 50).toFixed(2)})</p>
                     </div>
 
                     <div className="backtest-trades-list">
@@ -348,7 +355,7 @@ const Backtester = () => {
                                         <tr key={trade.id}>
                                             <td>{new Date(trade.entryTimestamp || trade.timestamp).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}</td>
                                             <td className={`action-text ${trade.action.toLowerCase()}`}>{trade.action}</td>
-                                            <td className="lot-cell">{(trade.quantity || 0.01).toFixed(4)}</td>
+                                            <td className="lot-cell">{(trade.quantity || 0.01).toFixed(2)}</td>
                                             <td>${trade.entryPrice.toFixed(2)}</td>
                                             <td>${trade.exitPrice.toFixed(2)}</td>
                                             <td className={trade.pnl >= 0 ? 'profit' : 'loss'}>

@@ -212,11 +212,19 @@ npm run dev:backend
 npm run dev:frontend
 ```
 
+### Local Backtests
+```bash
+# Runs the same unified logic used by the live bot
+node improved_backtest_cpr.js 90
+```
+
+The backtester uses the same closed-candle signal logic, realistic lifecycle accounting, and risk settings as the bot.
+
 ## 📈 Trading Logic
 
 - **Strategy**: Advanced 10-Factor Confluence Scoring (EMA, RSI, MACD, CPR, VWAP, Wyckoff, etc.)
 - **Timeframe**: 6-hour candles
-- **Position Sizing**: Tiered 5% max risk with discrete lots: `0.01`, `0.02`, `0.03`, or `0.04 BTC`.
+- **Position Sizing**: Confluence-scaled, two-decimal BTC lots only: `0.01` through `0.08 BTC`; scores `8+` target larger lots while risk guards still cap oversized stops.
 - **Risk Management**: Smart Stop Loss, partial TP, final TP, and trailing stop logic.
 - **Hours**: Configurable session gate. Current defaults allow 24-hour analysis.
 

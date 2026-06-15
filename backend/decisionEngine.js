@@ -1,4 +1,5 @@
 const AnalysisEngine = require('./analysisEngine');
+const { UNIFIED_PRESET_CONFIG } = require('./strategyConfig');
 
 // Known high-impact news dates (FOMC, CPI, NFP, etc.)
 // In production, this would be fetched dynamically from a news API
@@ -35,6 +36,12 @@ class DecisionEngine {
     }
 
     _getNumberEnv(name, fallback) {
+        const preset = String(process.env.STRATEGY_PRESET || 'unified').toLowerCase();
+        if (preset === 'unified') {
+            const value = UNIFIED_PRESET_CONFIG[name];
+            if (typeof value === 'number') return value;
+        }
+
         const value = Number(process.env[name]);
         return Number.isFinite(value) ? value : fallback;
     }

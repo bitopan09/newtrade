@@ -1,8 +1,17 @@
 const crypto = require('crypto');
+const { UNIFIED_PRESET_CONFIG } = require('./strategyConfig');
 
 const DEFAULT_STARTING_BALANCE = 50;
+const LEGACY_STARTING_BALANCE = 100;
 const AVATAR_COLORS = ['#2f6bff', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
 const SESSION_TTL_HOURS = 12;
+const DEFAULT_TERMINAL_SETTINGS = Object.freeze({
+    riskPercentage: UNIFIED_PRESET_CONFIG.RISK_PERCENTAGE,
+    minConfluenceScore: UNIFIED_PRESET_CONFIG.MIN_CONFLUENCE_SCORE,
+    maxDailyTrades: UNIFIED_PRESET_CONFIG.DAILY_TRADE_LIMIT,
+    maxDailyLosses: UNIFIED_PRESET_CONFIG.MAX_DAILY_LOSSES,
+    defaultLotSize: UNIFIED_PRESET_CONFIG.TRADING_MIN_BTC_QTY
+});
 
 function dbRun(db, sql, params = []) {
     return new Promise((resolve, reject) => {
@@ -113,7 +122,7 @@ function createTerminalTables(db) {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             userId TEXT UNIQUE NOT NULL,
             riskPercentage REAL DEFAULT 5,
-            minConfluenceScore INTEGER DEFAULT 4,
+            minConfluenceScore INTEGER DEFAULT 6,
             maxDailyTrades INTEGER DEFAULT 1,
             maxDailyLosses INTEGER DEFAULT 1,
             defaultLotSize REAL DEFAULT 0.01,
@@ -172,11 +181,73 @@ async function ensureBalance(db, userId, startingBalance = DEFAULT_STARTING_BALA
     }
 }
 
+async function syncUntouchedStartingBalancesToDefault(db) {
+    await dbRun(
+        db,
+        `UPDATE terminal_profiles SET startingBalance = ? WHERE startingBalance = ?`,
+        [DEFAULT_STARTING_BALANCE, LEGACY_STARTING_BALANCE]
+    );
+
+    const latestBalances = await dbAll(
+        db,
+        `SELECT b.*
+         FROM balance b
+         INNER JOIN (
+             SELECT userId, MAX(id) AS id
+             FROM balance
+             GROUP BY userId
+         ) latest ON b.id = latest.id
+         WHERE b.usd_balance = ? AND COALESCE(b.btc_balance, 0) = 0`,
+        [LEGACY_STARTING_BALANCE]
+    );
+
+    for (const balance of latestBalances) {
+        const tradeStats = await dbGet(db, `SELECT COUNT(*) AS count FROM trades WHERE userId = ?`, [balance.userId]);
+        if ((tradeStats?.count || 0) === 0) {
+            await dbRun(
+                db,
+                `INSERT INTO balance (userId, usd_balance, btc_balance) VALUES (?, ?, 0)`,
+                [balance.userId, DEFAULT_STARTING_BALANCE]
+            );
+            await logActivity(db, balance.userId, 'starting_balance_upgraded', {
+                from: LEGACY_STARTING_BALANCE,
+                to: DEFAULT_STARTING_BALANCE
+            });
+        }
+    }
+}
+
 async function ensureSettings(db, userId) {
     const existing = await dbGet(db, `SELECT id FROM terminal_settings WHERE userId = ? LIMIT 1`, [userId]);
     if (!existing) {
-        await dbRun(db, `INSERT INTO terminal_settings (userId) VALUES (?)`, [userId]);
+        await dbRun(
+            db,
+            `INSERT INTO terminal_settings (userId, riskPercentage, minConfluenceScore, maxDailyTrades, maxDailyLosses, defaultLotSize)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+                userId,
+                DEFAULT_TERMINAL_SETTINGS.riskPercentage,
+                DEFAULT_TERMINAL_SETTINGS.minConfluenceScore,
+                DEFAULT_TERMINAL_SETTINGS.maxDailyTrades,
+                DEFAULT_TERMINAL_SETTINGS.maxDailyLosses,
+                DEFAULT_TERMINAL_SETTINGS.defaultLotSize
+            ]
+        );
     }
+}
+
+async function upgradeLegacyTerminalSettings(db) {
+    await dbRun(
+        db,
+        `UPDATE terminal_settings
+         SET minConfluenceScore = ?, updatedAt = CURRENT_TIMESTAMP
+         WHERE riskPercentage = 5
+           AND minConfluenceScore = 4
+           AND maxDailyTrades = 1
+           AND maxDailyLosses = 1
+           AND defaultLotSize = 0.01`,
+        [DEFAULT_TERMINAL_SETTINGS.minConfluenceScore]
+    );
 }
 
 async function ensureTerminalForUser(db, userId, displayName = 'Terminal') {
@@ -408,6 +479,8 @@ module.exports = {
     getActivity,
     ensureTerminalForUser,
     ensureBalance,
+    syncUntouchedStartingBalancesToDefault,
+    upgradeLegacyTerminalSettings,
     logActivity,
     dbRun,
     dbGet,

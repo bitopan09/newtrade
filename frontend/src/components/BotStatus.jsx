@@ -32,6 +32,7 @@ const BotStatus = () => {
                 setLoading(false);
             } catch (error) {
                 console.error('Error fetching bot status:', error);
+                setLoading(false);
             }
         };
 

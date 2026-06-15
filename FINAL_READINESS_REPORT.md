@@ -34,9 +34,9 @@ Max loss rule: 5% of doubled base balance tier
 Trades/Day: 1
 Losses/Day: 1
 Score: 4
-ADX: 18
-SL ATR: 0.05
-Final TP R: 100
+ADX: 22
+SL ATR: 0.2
+Final TP R: 1.5
 Max ATR %: 8
 Fee %: 0.10
 Slippage %: 0.05
@@ -45,7 +45,7 @@ Spread %: 0.02
 
 ## Major Decisions
 
-- Switched from the previous safe `1%` profile to a higher-opportunity growth profile after the lot range was fixed to `0.01-0.04 BTC`.
+- Switched from the previous safe `1%` profile to a higher-opportunity growth profile after the lot range was fixed to `0.01-0.08 BTC`.
 - Kept `1 trade/day` and `1 loss/day` because the selected growth profile already uses high per-trade risk.
 - Restored previous-style signal behavior by removing the nearby support/resistance quality blockers, lowering ADX to `18`, and using trailing-profit style exits.
 - Modeled same-candle SL/TP ambiguity conservatively by assuming the stop is hit first.
@@ -108,14 +108,14 @@ CSV size: 13,003 bytes
 Critical tests added:
 
 - Position sizing respects the configured risk percentage.
-- Tiered 5% risk caps at `$2.50` below `$100` equity and `$5.00` once equity reaches `$100`.
+- Tiered 5% risk caps at `$5.00` from `$100` equity and `$10.00` once equity reaches `$200`.
 - Minimum lot sizing is rejected when it would exceed risk.
 - Position sizing floors to discrete `0.01 BTC` steps.
 - Strategy config is honored for confluence, ADX, ATR, and RR settings.
 - Same-candle stop/target ambiguity exits at stop first.
 - Trailing stop moves to breakeven after 1R.
 - Daily trade limit blocks additional trades.
-- Execution rejects manual/paper trade quantities outside `0.01-0.04 BTC`.
+- Execution rejects manual/paper trade quantities outside `0.01-0.08 BTC`.
 - Execution rejects non-step quantities such as `0.015 BTC`.
 
 ## Backtest Results
@@ -141,8 +141,8 @@ Expectancy: $6.02
 Average R: 2.73R
 Longest losing streak: 1
 Skipped signals: 87
-Allowed lots: 0.01, 0.02, 0.03, 0.04 BTC
-Lots selected by this run: 0.01, 0.02, 0.04 BTC
+Allowed lots: 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08 BTC
+Lots selected by this run: depends on current risk and stop distance, capped at 0.08 BTC
 ```
 
 Interpretation: the selected profile targets high in-sample 90-day return while enforcing the tiered 5% risk cap and discrete lot sizes, but the drawdown is still high and the sample is still small. Treat it as a high-risk profile, not as a guaranteed return model.
@@ -155,7 +155,7 @@ Interpretation: the selected profile targets high in-sample 90-day return while 
 
 - Backtest sample size is still limited because 6H candles over 90 days produced 39 completed trades.
 - The selected profile has high drawdown: the latest 90-day Coinbase run showed `87.62%` max drawdown after enforcing discrete lot sizes.
-- A `0.01 BTC` minimum lot is large for a `$50` account and can create high per-trade risk.
+- A `0.01 BTC` minimum lot is large for a `$100` account and can create high per-trade risk.
 - Coinbase historical candles may differ from another exchange’s BTC/USD or BTC/USDT feed.
 - The high-impact news calendar is static for 2026 and should be replaced with a live economic calendar API.
 - Paper execution does not model order queue position, partial fills, exchange outages, or liquidity constraints.
@@ -164,7 +164,7 @@ Interpretation: the selected profile targets high in-sample 90-day return while 
 ## Deployment Instructions
 
 1. Copy `.env.example` to `.env` and set secrets.
-2. Confirm risk settings before launch: `RISK_PERCENTAGE=5`, `DAILY_TRADE_LIMIT=1`, `MAX_DAILY_LOSSES=1`, `MIN_CONFLUENCE_SCORE=4`, `ADX_THRESHOLD=18`, `ATR_STOP_MULTIPLIER=0.05`.
+2. Confirm risk settings before launch: `RISK_PERCENTAGE=5`, `DAILY_TRADE_LIMIT=1`, `MAX_DAILY_LOSSES=1`, `MIN_CONFLUENCE_SCORE=4`, `ADX_THRESHOLD=22`, `ATR_STOP_MULTIPLIER=0.2`, `FINAL_TP_RR=1.5`.
 3. Run `npm install` at the root if dependencies are not installed.
 4. Run `cd frontend && npm install` if frontend dependencies are not installed.
 5. Run `npm run validate` and confirm all checks pass.

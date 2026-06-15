@@ -106,7 +106,10 @@ db.serialize(() => {
     db.run(`CREATE INDEX IF NOT EXISTS idx_trades_user_timestamp ON trades(userId, timestamp)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_prices_timestamp ON prices(timestamp)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_backtest_results_user_timestamp ON backtest_results(userId, timestamp)`);
-    terminalStore.createTerminalTables(db).catch(error => {
+    terminalStore.createTerminalTables(db).then(async () => {
+        await terminalStore.syncUntouchedStartingBalancesToDefault(db);
+        await terminalStore.upgradeLegacyTerminalSettings(db);
+    }).catch(error => {
         console.error('Error creating terminal tables:', error.message);
     });
 
@@ -246,10 +249,21 @@ function saveBacktestResult({ userId = 'default', days, strategy, config, result
 function buildBacktestCsv(result, label = 'Backtest Results') {
     const summary = buildBacktestSummary(result);
     let csv = `${csvEscape(label)}\n`;
+    csv += `Signal Logic,${csvEscape('Unified live/backtest logic')}\n`;
+    csv += `Backtest Engine,${csvEscape(result.backtestEngine || '')}\n`;
+    csv += `Engine Version,${csvEscape(result.backtestEngineVersion || '')}\n`;
+    csv += `Trade Accounting,${csvEscape(result.tradeLifecycleAccounting || '')}\n`;
     csv += 'Metric,Value\n';
     Object.entries(summary).forEach(([key, value]) => {
         csv += `${csvEscape(key)},${csvEscape(value)}\n`;
     });
+
+    if (result.effectiveConfig && Object.keys(result.effectiveConfig).length > 0) {
+        csv += '\nEffective Settings\nKey,Value\n';
+        Object.entries(result.effectiveConfig).forEach(([key, value]) => {
+            csv += `${csvEscape(key)},${csvEscape(value)}\n`;
+        });
+    }
 
     if (result.skippedReasons && Object.keys(result.skippedReasons).length > 0) {
         csv += '\nSkipped Reasons\nReason,Count\n';
@@ -267,24 +281,30 @@ function buildBacktestCsv(result, label = 'Backtest Results') {
 
     if (Array.isArray(result.trades) && result.trades.length > 0) {
         csv += '\nIndividual Trades\n';
-        csv += 'ID,Entry Timestamp,Exit Timestamp,Action,Quantity,Entry Price,Exit Price,SL,Original SL,TP1,TP2,PnL,Fees,Risk Amount,Actual Risk,Score,Confluence,Exit Reason\n';
+        csv += 'ID,Entry Timestamp,Exit Timestamp,Action,Quantity,Remaining Quantity,Entry Price,Exit Price,SL,Original SL,TP1,TP2,Partial Closed,Partial Exit,Partial PnL,PnL,Fees,Risk Amount,Actual Risk,Target Lot,Risk %,Score,Confluence,Exit Reason\n';
         result.trades.forEach(trade => {
             csv += [
                 trade.id,
                 trade.entryTimestamp || trade.timestamp || '',
                 trade.exitTimestamp || '',
                 trade.action || '',
-                trade.quantity || '',
+                trade.quantity !== undefined ? Number(trade.quantity).toFixed(2) : '',
+                trade.remainingQuantity !== undefined ? Number(trade.remainingQuantity).toFixed(2) : '',
                 trade.entryPrice || '',
                 trade.exitPrice || '',
                 trade.sl || '',
                 trade.originalSl || '',
                 trade.tp1 || '',
                 trade.tp2 || '',
+                trade.partialClosed || false,
+                trade.partialExitPrice || '',
+                trade.partialPnl || '',
                 trade.pnl || '',
                 trade.fees || '',
                 trade.riskAmount || '',
                 trade.actualRisk || '',
+                trade.confluenceTargetQuantity !== undefined ? Number(trade.confluenceTargetQuantity).toFixed(2) : '',
+                trade.confluenceRiskPercentage !== undefined ? Number(trade.confluenceRiskPercentage).toFixed(2) : '',
                 trade.score || '',
                 trade.confluence || '',
                 trade.exitReason || ''
@@ -526,11 +546,11 @@ app.get('/api/balance', async (req, res) => {
 });
 
 app.get('/api/trades', async (req, res) => {
-    // Get trade history for selected terminal only
+    // Show selected terminal trades plus global bot trades.
     const limit = req.query.limit || 50;
     const userId = req.query.userId || 'default';
     if (!await requireTerminalAccess(req, res, userId)) return;
-    db.all(`SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC LIMIT ?`, [userId, limit], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE userId = ? OR userId = 'default' ORDER BY timestamp DESC LIMIT ?`, [userId, limit], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -540,10 +560,10 @@ app.get('/api/trades', async (req, res) => {
 });
 
 app.get('/api/trades/active', async (req, res) => {
-    // Get active trades for selected terminal only
+    // Show selected terminal active trades plus global bot active trades.
     const userId = req.query.userId || 'default';
     if (!await requireTerminalAccess(req, res, userId)) return;
-    db.all(`SELECT * FROM trades WHERE userId = ? AND status = 'OPEN' ORDER BY timestamp DESC`, [userId], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE (userId = ? OR userId = 'default') AND status = 'OPEN' ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -624,13 +644,12 @@ app.post('/api/bot/stop', (req, res) => {
 app.get('/api/bot/status', async (req, res) => {
     try {
         const userId = req.query.userId || 'default';
-        if (!await requireTerminalAccess(req, res, userId)) return;
         const status = tradingBot.getStatus();
         const recentTrades = await tradingBot.getRecentTrades(5);
         
         // Get today's trade if it exists
         const today = new Date().toISOString().split('T')[0];
-        db.get("SELECT * FROM trades WHERE userId = ? AND timestamp LIKE ? LIMIT 1", [userId, `${today}%`], (err, row) => {
+        db.get("SELECT * FROM trades WHERE userId = 'default' AND timestamp LIKE ? ORDER BY timestamp DESC LIMIT 1", [`${today}%`], (err, row) => {
             res.json({
                 bot: status,
                 recentTrades: recentTrades,
@@ -790,7 +809,7 @@ app.post('/api/trades/:id/close', async (req, res) => {
 app.get('/api/trades/export', async (req, res) => {
     const userId = req.query.userId || 'default';
     if (!await requireTerminalAccess(req, res, userId)) return;
-    db.all(`SELECT * FROM trades WHERE userId = ? ORDER BY timestamp DESC`, [userId], (err, rows) => {
+    db.all(`SELECT * FROM trades WHERE userId = ? OR userId = 'default' ORDER BY timestamp DESC`, [userId], (err, rows) => {
         if (err) {
             return res.status(500).send('Error fetching trades');
         }

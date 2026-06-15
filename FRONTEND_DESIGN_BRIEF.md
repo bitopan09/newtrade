@@ -131,7 +131,7 @@ Do not remove or break these behaviors:
 0.01 BTC
 0.02 BTC
 0.03 BTC
-0.04 BTC
+0.08 BTC
 ```
 
 - Tiered 5% risk rule in UI copy where risk is explained.
@@ -308,7 +308,7 @@ Design improvements:
 - Add microcopy near quantity:
 
 ```txt
-Allowed paper lot: 0.01 - 0.04 BTC
+Allowed paper lot: 0.01 - 0.08 BTC
 ```
 
 Do not allow freeform quantity input.
@@ -513,7 +513,7 @@ The frontend redesign is accepted only if:
 - `cd frontend && npm run build` passes.
 - No fake/random market data is introduced.
 - The chart still uses real Coinbase `BTC-USD` 1-minute OHLC candles.
-- Manual lot choices remain exactly `0.01`, `0.02`, `0.03`, `0.04 BTC`.
+- Manual lot choices remain exactly two-decimal BTC steps from `0.01` through `0.08 BTC`.
 - Telegram test alert remains available.
 - UI clearly says paper trading where needed.
 - Mobile and desktop layouts are usable.

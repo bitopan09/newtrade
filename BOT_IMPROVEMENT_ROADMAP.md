@@ -2,7 +2,7 @@
 
 ## Goal
 
-Improve the BTC/USD paper trading bot and backtester for a small $50 account by making the system safer, more realistic, more configurable, and easier to evaluate.
+Improve the BTC/USD paper trading bot and backtester for a small $100 account by making the system safer, more realistic, more configurable, and easier to evaluate.
 
 ---
 
@@ -41,7 +41,7 @@ Backtest results become less inflated and more useful for deciding whether the s
 
 ---
 
-## Phase 2: $50 Account Risk Management
+## Phase 2: $100 Account Risk Management
 
 ### Objective
 
@@ -50,7 +50,7 @@ Make the bot safer for a small account.
 ### Recommended Settings
 
 - Risk per trade: 1% to 2%.
-- Dollar risk per trade: $0.50 to $1.00.
+- Dollar risk per trade: $1.00 to $2.00.
 - Max daily trades: 1.
 - Max daily losses: 1.
 - Minimum confluence score: 6/10.
@@ -64,7 +64,7 @@ Make the bot safer for a small account.
 
 - Reduce risk from 5% to 1% or 2%.
 - Stop trading for the day after one loss.
-- Skip trades where the calculated stop loss is too wide for a $50 balance.
+- Skip trades where the calculated stop loss is too wide for a $100 balance.
 - Skip trades where minimum lot size creates excessive risk.
 - Add maximum allowed dollar risk validation.
 - Add maximum ATR filter.
@@ -336,7 +336,7 @@ The project becomes more stable, maintainable, and safer to run continuously.
    - slippage.
    - next-candle entries.
    - better metrics.
-2. Improve $50 risk controls:
+2. Improve $100 risk controls:
    - reduce risk to 1-2%.
    - one loss per day.
    - skip wide-stop trades.
@@ -353,7 +353,7 @@ The project becomes more stable, maintainable, and safer to run continuously.
 
 ---
 
-## Recommended Starting Settings For $50 Balance
+## Recommended Starting Settings For $100 Balance
 
 ```txt
 Risk per trade: 1%
@@ -373,6 +373,6 @@ Skip condition: high ATR or choppy market
 
 ## Core Principle
 
-For a $50 account, the bot should not try to trade more often.
+For a $100 account, the bot should not try to trade more often.
 
 The best improvement is to trade less, risk less, and only take cleaner setups with better exit management.

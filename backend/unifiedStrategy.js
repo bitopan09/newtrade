@@ -12,16 +12,18 @@
  * - OB/FVG: tracks bullish vs bearish order blocks separately
  * - News filter integration hook
  */
+const { UNIFIED_PRESET_CONFIG } = require('./strategyConfig');
 
 class UnifiedStrategy {
     constructor(config = {}) {
         this.config = config;
+        this.STRATEGY_PRESET = this._getPresetName();
         this.CONFLUENCE_THRESHOLD = this._getNumberEnv('MIN_CONFLUENCE_SCORE', 4);
         this.MAX_SCORE = 10;
-        this.DEFAULT_QUANTITY = 0.01;
-        this.LOT_MIN = 0.01;
-        this.LOT_MAX = 0.04;
-        this.LOT_STEP = 0.01;
+        this.DEFAULT_QUANTITY = this._getNumberEnv('BTC_QUANTITY', 0.01);
+        this.LOT_MIN = this._getNumberEnv('TRADING_MIN_BTC_QTY', 0.01);
+        this.LOT_MAX = this._getNumberEnv('TRADING_MAX_BTC_QTY', 0.06);
+        this.LOT_STEP = this._getNumberEnv('TRADING_LOT_STEP_BTC', 0.01);
         this.PARTIAL_TP_RR = this._getNumberEnv('PARTIAL_TP_RR', 100);
         this.FINAL_TP_RR = this._getNumberEnv('FINAL_TP_RR', 100);
         this.MIN_REWARD_TO_RISK = this._getNumberEnv('MIN_REWARD_TO_RISK', 1.5);
@@ -33,6 +35,30 @@ class UnifiedStrategy {
         this.BREAKEVEN_TRIGGER_RR = this._getNumberEnv('BREAKEVEN_TRIGGER_RR', 1);
         this.ALLOW_LONG_TRADES = this._getBooleanEnv('ALLOW_LONG_TRADES', true);
         this.ALLOW_SHORT_TRADES = this._getBooleanEnv('ALLOW_SHORT_TRADES', true);
+        this.UNIFIED_MODE = this._getBooleanEnv('UNIFIED_MODE', this.STRATEGY_PRESET === 'unified');
+        this.MIN_SCORE_EDGE = this._getNumberEnv('MIN_SCORE_EDGE', this.UNIFIED_MODE ? 3 : 0);
+        this.REJECT_TIE_SCORE = this._getBooleanEnv('REJECT_TIE_SCORE', this.UNIFIED_MODE);
+        this.REQUIRE_DIRECTIONAL_TRIGGER = this._getBooleanEnv('REQUIRE_DIRECTIONAL_TRIGGER', this.UNIFIED_MODE);
+        this.MIN_EMA_SEPARATION = this._getNumberEnv('MIN_EMA_SEPARATION', 0);
+        this.MAX_SIGNAL_RANGE_ATR = this._getNumberEnv('MAX_SIGNAL_RANGE_ATR', this.UNIFIED_MODE ? 2.8 : 999);
+    }
+
+    _getPresetName() {
+        return String(this.config.STRATEGY_PRESET || process.env.STRATEGY_PRESET || 'unified').toLowerCase();
+    }
+
+    _presetValue(name) {
+        if (this.STRATEGY_PRESET !== 'unified') return undefined;
+
+        const value = UNIFIED_PRESET_CONFIG[name];
+        return typeof value === 'number' ? value : undefined;
+    }
+
+    _presetBooleanValue(name) {
+        if (this.STRATEGY_PRESET !== 'unified') return undefined;
+
+        const value = UNIFIED_PRESET_CONFIG[name];
+        return typeof value === 'boolean' ? value : undefined;
     }
 
     _getNumberEnv(name, fallback) {
@@ -40,6 +66,9 @@ class UnifiedStrategy {
             const configValue = Number(this.config[name]);
             return Number.isFinite(configValue) ? configValue : fallback;
         }
+
+        const presetValue = this._presetValue(name);
+        if (presetValue !== undefined) return presetValue;
 
         const value = Number(process.env[name]);
         return Number.isFinite(value) ? value : fallback;
@@ -50,6 +79,9 @@ class UnifiedStrategy {
             if (typeof this.config[name] === 'boolean') return this.config[name];
             return String(this.config[name]).toLowerCase() === 'true';
         }
+
+        const presetValue = this._presetBooleanValue(name);
+        if (presetValue !== undefined) return presetValue;
 
         if (process.env[name] === undefined) return fallback;
         return String(process.env[name]).toLowerCase() === 'true';
@@ -537,6 +569,9 @@ class UnifiedStrategy {
         const { score, indicators, dominantDirection, bullScore, bearScore } = confluence;
 
         let signal = 'NEUTRAL';
+        const qualityFilters = [];
+
+        const riskParams = this.calculateRiskParameters(priceData, indicators, confluence.score);
 
         if (score >= this.CONFLUENCE_THRESHOLD) {
             const prices = priceData.map(p => p.price);
@@ -545,6 +580,8 @@ class UnifiedStrategy {
             const ema9Val = ema9[ema9.length - 1];
             const ema21Val = ema21[ema21.length - 1];
             const currentPrice = priceData[priceData.length - 1].price;
+            const currentCandle = priceData[priceData.length - 1];
+            const atr = this.calculateAtr(priceData, 14);
 
             // v3 TUNING: EMA alignment must MATCH the confluence direction
             const emaBullish = ema9Val > ema21Val && currentPrice > indicators.ema50Val;
@@ -559,14 +596,65 @@ class UnifiedStrategy {
             const macroTrendBullish = currentPrice > ema200Val;
             const macroTrendBearish = currentPrice < ema200Val;
 
-            if (isTrending) {
+            const scoreEdge = Math.abs(bullScore - bearScore);
+            if (this.REJECT_TIE_SCORE && bullScore === bearScore) {
+                qualityFilters.push('Bull/bear score tie');
+            }
+            if (scoreEdge < this.MIN_SCORE_EDGE) {
+                qualityFilters.push(`Score edge too small (${scoreEdge})`);
+            }
+
+            const emaSeparation = currentPrice > 0 ? Math.abs(ema9Val - ema21Val) / currentPrice : 0;
+            if (emaSeparation < this.MIN_EMA_SEPARATION) {
+                qualityFilters.push('EMA compression');
+            }
+
+            const candleRange = (currentCandle.high || currentPrice) - (currentCandle.low || currentPrice);
+            if (atr > 0 && candleRange / atr > this.MAX_SIGNAL_RANGE_ATR) {
+                qualityFilters.push('Oversized signal candle');
+            }
+
+            if (riskParams.atrPercent > this.MAX_ATR_PERCENT_OF_PRICE) {
+                qualityFilters.push(`ATR too high (${(riskParams.atrPercent * 100).toFixed(2)}% > ${(this.MAX_ATR_PERCENT_OF_PRICE * 100).toFixed(2)}%)`);
+            }
+
+            if (riskParams.riskReward.final < this.MIN_REWARD_TO_RISK) {
+                qualityFilters.push(`Reward/risk too low (${riskParams.riskReward.final}R < ${this.MIN_REWARD_TO_RISK}R)`);
+            }
+
+            if (this.REQUIRE_DIRECTIONAL_TRIGGER) {
+                const hasDirectionalTrigger = [
+                    indicators.liquidity?.signal,
+                    indicators.structure?.signal,
+                    indicators.obfvg?.signal
+                ].includes(dominantDirection);
+
+                if (!hasDirectionalTrigger) {
+                    qualityFilters.push('No liquidity/structure trigger');
+                }
+            }
+
+            if (isTrending && qualityFilters.length === 0) {
                 if (this.ALLOW_LONG_TRADES && dominantDirection === 'BULLISH' && emaBullish && macroTrendBullish) signal = 'BUY';
                 else if (this.ALLOW_SHORT_TRADES && dominantDirection === 'BEARISH' && emaBearish && macroTrendBearish) signal = 'SELL';
+
+                if (signal === 'NEUTRAL') {
+                    if (dominantDirection === 'BULLISH') {
+                        if (!this.ALLOW_LONG_TRADES) qualityFilters.push('Long trades disabled');
+                        if (ema9Val <= ema21Val) qualityFilters.push('BUY blocked: EMA9 not above EMA21');
+                        if (currentPrice <= indicators.ema50Val) qualityFilters.push('BUY blocked: price below EMA50');
+                        if (!macroTrendBullish) qualityFilters.push('BUY blocked: price below macro EMA');
+                    } else {
+                        if (!this.ALLOW_SHORT_TRADES) qualityFilters.push('Short trades disabled');
+                        if (ema9Val >= ema21Val) qualityFilters.push('SELL blocked: EMA9 not below EMA21');
+                        if (currentPrice >= indicators.ema50Val) qualityFilters.push('SELL blocked: price above EMA50');
+                        if (!macroTrendBearish) qualityFilters.push('SELL blocked: price above macro EMA');
+                    }
+                }
+            } else if (!isTrending) {
+                qualityFilters.push(`ADX below threshold (${adx.toFixed(1)} < ${this.ADX_THRESHOLD})`);
             }
         }
-
-        const riskParams = this.calculateRiskParameters(priceData, indicators, confluence.score);
-        const qualityFilters = [];
 
         return {
             signal,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { fetchActiveTrades, closeTrade, createPriceWebSocket } from '../services/api';
+import { fetchActiveTrades, closeTrade, createPriceWebSocket, getCurrentUserId } from '../services/api';
 
 const ActiveTrades = () => {
     const [trades, setTrades] = useState([]);
@@ -73,6 +73,7 @@ const ActiveTrades = () => {
                 <div className="active-trades-grid">
                     {trades.map(trade => {
                         const pnl = calculatePnL(trade);
+                        const canExit = trade.userId === getCurrentUserId();
                         return (
                             <div key={trade.id} className={`active-trade-card ${trade.action.toLowerCase()}`}>
                                 <div className="trade-header">
@@ -87,12 +88,16 @@ const ActiveTrades = () => {
                                     <p><strong>SL</strong><span>${trade.sl?.toFixed(2) || 'N/A'}</span></p>
                                     <p><strong>TP2</strong><span>${trade.tp2?.toFixed(2) || 'N/A'}</span></p>
                                 </div>
-                                <button 
-                                    className="btn-exit" 
-                                    onClick={() => handleExit(trade.id)}
-                                >
-                                    EXIT NOW
-                                </button>
+                                {canExit ? (
+                                    <button
+                                        className="btn-exit"
+                                        onClick={() => handleExit(trade.id)}
+                                    >
+                                        EXIT NOW
+                                    </button>
+                                ) : (
+                                    <p className="panel-kicker">Global bot trade: view-only</p>
+                                )}
                             </div>
                         );
                     })}

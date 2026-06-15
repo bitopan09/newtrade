@@ -49,6 +49,7 @@ function App() {
         const checkBot = async () => {
             try {
                 const res = await apiFetch(`${API_BASE_URL}/bot/status?userId=${encodeURIComponent(getCurrentUserId())}&accessToken=${encodeURIComponent(getTerminalAccessToken())}`);
+                if (!res.ok) { setBotOnline(false); return; }
                 const data = await res.json();
                 setBotOnline(data.bot?.isRunning || false);
             } catch { setBotOnline(false); }
