@@ -6,7 +6,7 @@
  * v2 Fixes:
  * - Direction-aware confluence scoring (bullish/bearish counted separately)
  * - MACD: requires crossover + direction match (no more free points)
- * - VWAP: requires proximity (within 0.5% of VWAP), not just above/below
+ * - VWAP: requires proximity (within 1.5% of VWAP), not just above/below
  * - RSI: validates momentum direction (rising for bull, falling for bear)
  * - Structure Break: tracks direction of BOS/CHoCH
  * - OB/FVG: tracks bullish vs bearish order blocks separately
@@ -591,7 +591,7 @@ class UnifiedStrategy {
             const isTrending = adx >= this.ADX_THRESHOLD;
 
             // v3 TUNING: EMA200 macro trend bias
-            const ema200 = this.calculateEma(prices, Math.min(prices.length - 1, 50));
+            const ema200 = this.calculateEma(prices, Math.min(prices.length - 1, 200));
             const ema200Val = ema200[ema200.length - 1];
             const macroTrendBullish = currentPrice > ema200Val;
             const macroTrendBearish = currentPrice < ema200Val;

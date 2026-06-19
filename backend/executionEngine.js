@@ -17,9 +17,6 @@ class ExecutionEngine {
 
         // Active trades tracking
         this.activeTrades = new Map();
-        this.trailingStopAtrMultiplier = this._getNumberEnv('TRAILING_STOP_ATR_MULTIPLIER', 2);
-        this.breakevenTriggerRr = this._getNumberEnv('BREAKEVEN_TRIGGER_RR', 1);
-        this.trailingStartRr = this._getNumberEnv('TRAILING_START_RR', 1);
         this.lotMin = this._getNumberEnv('TRADING_MIN_BTC_QTY', LOT_MIN_BTC);
         this.lotMax = this._getNumberEnv('TRADING_MAX_BTC_QTY', LOT_MAX_BTC);
         this.lotStep = this._getNumberEnv('TRADING_LOT_STEP_BTC', LOT_STEP_BTC);
