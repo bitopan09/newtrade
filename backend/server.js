@@ -1014,13 +1014,15 @@ const server_instance = server.listen(PORT, '0.0.0.0', () => {
         }, 2000);
     }
 
-    // Keep-alive self-ping for Render free tier (prevents sleep after 15 min)
-    if (process.env.RENDER_EXTERNAL_URL || process.env.KEEP_ALIVE === 'true') {
-        const pingUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    // Keep-alive self-ping (prevents free-tier sleep on Railway/Render)
+    // Works in production on any platform; harmless on local dev
+    if (process.env.NODE_ENV === 'production' || process.env.RENDER_EXTERNAL_URL || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.KEEP_ALIVE === 'true') {
+        const externalUrl = process.env.RENDER_EXTERNAL_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+        const pingUrl = externalUrl || `http://localhost:${PORT}`;
         setInterval(() => {
             fetch(`${pingUrl}/api/price`).catch(() => {});
         }, 14 * 60 * 1000); // Ping every 14 minutes
-        console.log('[KEEP-ALIVE] Self-ping enabled (every 14 min)');
+        console.log(`[KEEP-ALIVE] Self-ping enabled (every 14 min) → ${pingUrl}`);
     }
 });
 
